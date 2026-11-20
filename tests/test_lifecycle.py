@@ -1,11 +1,13 @@
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 from uuid import uuid4
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "plugins" / "codex-sticky-notes"))
 from lifecycle import Event, Instance
 from startup import LaunchState
+import window
 
 
 class LifecycleTests(unittest.TestCase):
@@ -32,6 +34,21 @@ class LifecycleTests(unittest.TestCase):
         sender.signal()
         self.assertTrue(receiver.wait())
         self.assertFalse(receiver.wait())
+
+    def test_main_launchers_use_the_same_orange_instance(self):
+        for args in ([], ["--background"], ["--orange-demo"]):
+            with (self.subTest(args=args), patch.object(sys, "argv", ["window.py", *args]),
+                  patch.object(window, "Instance") as instance, patch.object(window, "Event") as event,
+                  patch.object(window.tk, "Tk") as tk, patch.object(window, "StickyWindow") as notes,
+                  patch.object(window.ctypes.windll.user32, "SetProcessDPIAware")):
+                window.main()
+                instance.assert_called_once_with("window")
+                event.assert_called_once_with("window-activate")
+                notes.assert_called_once_with(tk.return_value, preview=False, project_color_demo=None)
+                self.assertEqual(tk.return_value.withdraw.called, args == ["--background"])
+                self.assertEqual(tk.return_value.after_idle.called, args == ["--background"])
+                if args == ["--background"]:
+                    tk.return_value.after_idle.assert_called_once_with(notes.return_value.collapse)
 
     def test_start_retry_close_and_next_codex_launch(self):
         state = LaunchState()

@@ -36,6 +36,8 @@ class Palette:
         "read": ("#f3e2df", "#efd8d4", "#dfc3be", "#814c4e"),
         "unknown": ("#eeeae1", "#e9e3d9", "#d9d0c1", "#655d51"),
     })
+    # Normal and hover fills shared by project and session cards.
+    status_backgrounds: dict[str, tuple[str, str]] = dataclass_field(default_factory=dict)
 
 
 SAGE = Palette()
@@ -58,6 +60,29 @@ ORANGE = replace(
         "unknown": ("#ebebf6", "#e4e4f2", "#d2d4e8", "#5f576e"),
     },
 )
+
+HIGH_CONTRAST_BACKGROUNDS = {
+    "running": ("#F7B844", "#F9B22F"),
+    "read": ("#ED9EAB", "#EA97A9"),
+    "unread": ("#94D9AB", "#8AD4A4"),
+    "unknown": ("#BEC8E1", "#B7C1DD"),
+}
+VIVID_PASTEL_BACKGROUNDS = {
+    "running": ("#FFD77D", "#FFD168"),
+    "read": ("#F9BCCB", "#F6B5C9"),
+    "unread": ("#AEE1BC", "#A4DCB5"),
+    "unknown": ("#D5D8EF", "#CED1EB"),
+}
+ORANGE_MAIN = replace(
+    ORANGE,
+    status_backgrounds={**VIVID_PASTEL_BACKGROUNDS, "read": ("#F7EEEA", "#F3E7E2")},
+)
+
+# Normal and selected fills for the project tiles only.
+PROJECT_COLOR_DEMOS = {
+    "vivid-pastels": ("鲜明粉彩", VIVID_PASTEL_BACKGROUNDS),
+    "high-contrast": ("最醒目", HIGH_CONTRAST_BACKGROUNDS),
+}
 
 
 def palette_for(widget):

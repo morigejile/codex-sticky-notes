@@ -76,7 +76,8 @@ def check_window_overlay(widget, rounded_window):
     assert (bounds.left, bounds.top, bounds.right, bounds.bottom) == screen_box(widget)
 
 
-def check_window(store, *, orange_demo=False):
+def check_window(store, *, preview=False, project_color_demo=None):
+    orange_theme = not preview or project_color_demo is not None
     now = int(time.time() * 1000)
     threads = [
         dict(id="one", title="整理会话进展和显示方式", updated=now - 30, progress="已验证测试版。",
@@ -98,12 +99,17 @@ def check_window(store, *, orange_demo=False):
              project_key="unknown", project="进度", project_path="D:/Unknown"),
     ]
     older_ids = [f"older-{index}" for index in range(12)]
-    threads.extend(dict(threads[0], id=thread_id, title=f"较早的会话 {index + 1}",
-                        updated=now - 100 - index, unread=False, unread_completed=False)
-                   for index, thread_id in enumerate(older_ids))
+    older_statuses = {"older-0": ("failed", False), "older-1": ("completed", None),
+                      "older-2": ("interrupted", False)}
+    for index, thread_id in enumerate(older_ids):
+        status, unread = older_statuses.get(thread_id, ("completed", False))
+        threads.append(dict(threads[0], id=thread_id, title=f"较早的会话 {index + 1}",
+                            updated=now - 100 - index, status=status, unread=unread,
+                            unread_completed=False))
     root = tk.Tk()
     root.attributes("-topmost", True)
-    window = StickyWindow(root, store, lambda: threads, orange_demo=orange_demo)
+    window = StickyWindow(root, store, lambda: threads, preview=preview,
+                          project_color_demo=project_color_demo)
     cursor = (-1, -1)
     pointer = patch.object(root, "winfo_pointerxy", side_effect=lambda: cursor)
     pointer.start()
@@ -115,7 +121,7 @@ def check_window(store, *, orange_demo=False):
                               y=widget.winfo_height() // 2)
 
     def resize(width, height):
-        if orange_demo:
+        if orange_theme:
             x, y, _, _ = screen_box(root)
             set_window_bounds(root, x, y, width, height)
         else:
@@ -123,9 +129,12 @@ def check_window(store, *, orange_demo=False):
 
     try:
         until(root, lambda: window.threads is not None and window.thread_list.winfo_ismapped())
-        palette = ORANGE if orange_demo else SAGE
+        palette = ORANGE if orange_theme else SAGE
+        if project_color_demo is None:
+            assert root.title() == ("Codex 便签 · 方块预览" if preview else "Codex 便签")
+        assert window.palette.paper == palette.paper
         assert root["bg"] == palette.paper
-        if orange_demo:
+        if orange_theme:
             assert not window_style(root) & WS_CAPTION
             assert window.rounded_window.shape is not None
             _, bounds = window.rounded_window.shape
@@ -171,14 +180,14 @@ def check_window(store, *, orange_demo=False):
         window.add_task()
         assert len(store.list()) == 1
         task_surface = window.task_list.winfo_children()[0]
-        if orange_demo:
+        if orange_theme:
             root.update_idletasks()
             assert task_surface.winfo_height() >= round(41 * window.scale)
         task_row = next(child for child in task_surface.winfo_children()
                         if isinstance(child, tk.Frame))
         checkbox = next(child for child in task_row.winfo_children()
                         if isinstance(child, tk.Checkbutton))
-        if orange_demo:
+        if orange_theme:
             assert not int(checkbox["indicatoron"])
             assert checkbox["image"] and checkbox["selectimage"]
             indicator_width = int(root.tk.call("image", "width", checkbox["image"]))
@@ -192,9 +201,21 @@ def check_window(store, *, orange_demo=False):
         one, two, read, unknown = window.project_cards.values()
         assert len({card.status for card in (one, two, read, unknown)}) == 4
         for card in window.project_cards.values():
-            if orange_demo:
+            if orange_theme:
                 check_antialiased_corners(card, "surface")
                 check_antialiased_corners(card, "status-badge")
+                expected = {
+                    None: ("#FFD77D", "#F7EEEA", "#AEE1BC", "#D5D8EF"),
+                    "vivid-pastels": ("#FFD77D", "#F9BCCB", "#AEE1BC", "#D5D8EF"),
+                    "high-contrast": ("#F7B844", "#ED9EAB", "#94D9AB", "#BEC8E1"),
+                }
+                index = ("running", "read", "unread", "unknown").index(card.status)
+                for tag in ("surface", "status-badge"):
+                    fills = [card.itemcget(item, "fill") for item in card.find_withtag(tag)
+                             if card.type(item) == "rectangle"]
+                    assert fills[-1].upper() == expected[project_color_demo][index]
+                    if tag == "status-badge":
+                        assert fills[0] == ORANGE.project_colors[card.status][2]
             else:
                 badge, = card.find_withtag("status-badge")
                 paper, _, border, _ = palette.project_colors[card.status]
@@ -202,9 +223,9 @@ def check_window(store, *, orange_demo=False):
                 assert card.itemcget(badge, "outline") == border
         assert one.winfo_rootx() < two.winfo_rootx() < read.winfo_rootx()
         assert one.winfo_rooty() == two.winfo_rooty() == read.winfo_rooty()
-        if orange_demo:
+        if orange_theme:
             assert unknown.winfo_rooty() == one.winfo_rooty()
-        if orange_demo:
+        if orange_theme:
             assert one.winfo_height() < one.winfo_width()
             for card, line_count in ((one, 1), (two, 2)):
                 title_item, = card.find_withtag("project-title")
@@ -230,12 +251,12 @@ def check_window(store, *, orange_demo=False):
         resize(root.minsize()[0], original_height)
         until(root, lambda: read.winfo_rooty() > one.winfo_rooty())
         assert read.winfo_rootx() == one.winfo_rootx()
-        if orange_demo:
+        if orange_theme:
             assert title.winfo_ismapped() and close_button.winfo_ismapped() and art.winfo_ismapped()
             assert screen_box(close_button)[2] < screen_box(art)[0]
         resize(original_width, original_height)
         until(root, lambda: read.winfo_rooty() == one.winfo_rooty())
-        if orange_demo:
+        if orange_theme:
             assert abs(center(title)[1] - center(window.pin_control)[1]) <= 1
             canvas = window.page.canvas
             bottom_inset = round(17 * window.scale)
@@ -252,6 +273,40 @@ def check_window(store, *, orange_demo=False):
             resize(original_width, original_height)
             canvas.yview_moveto(0)
             root.update()
+            resize(root.minsize()[0], root.minsize()[1])
+            until(root, lambda: canvas.yview()[1] < 1)
+            window.entry.insert(0, "未保存的待办")
+            window.task_freeze_switch.invoke()
+            until(root, lambda: window.entry.winfo_viewable() and canvas.yview()[1] < 1)
+            task_y = window.entry.winfo_rooty()
+            project_y = one.winfo_rooty()
+            one.event_generate("<MouseWheel>", delta=-120)
+            until(root, lambda: one.winfo_rooty() < project_y)
+            assert window.entry.winfo_rooty() == task_y
+            assert window.entry.get() == "未保存的待办"
+
+            overflow_tasks = [store.add(f"滚动测试待办 {index}") for index in range(8)]
+            window.refresh_tasks()
+            task_canvas = window.fixed_task_rows.canvas
+            until(root, lambda: task_canvas.yview()[1] < 1)
+            project_scroll = canvas.yview()
+            window.task_list.event_generate("<MouseWheel>", delta=-120)
+            until(root, lambda: task_canvas.yview()[0] > 0)
+            assert canvas.yview() == project_scroll
+            for task in overflow_tasks:
+                store.delete(task["id"])
+            window.refresh_tasks()
+
+            window.task_freeze_switch.invoke()
+            until(root, lambda: window.entry.winfo_viewable() and canvas.yview()[0] == 0)
+            assert window.entry.get() == "未保存的待办"
+            window.entry.delete(0, "end")
+            task_y = window.entry.winfo_rooty()
+            one.event_generate("<MouseWheel>", delta=-120)
+            until(root, lambda: window.entry.winfo_rooty() < task_y)
+            resize(original_width, original_height)
+            canvas.yview_moveto(0)
+            root.update()
         point_at(window.entry)
         until(root, lambda: window.popup is None)
         point_at(one)
@@ -261,15 +316,38 @@ def check_window(store, *, orange_demo=False):
         assert popup.links["one"]["bg"] == palette.card
         assert list(popup.links) == ["running", "one", *older_ids]
         first, second = popup.links["running"], popup.links["one"]
-        if orange_demo:
+        if project_color_demo is not None:
+            assert first.fill == ORANGE.project_colors["running"][0]
+            assert second.fill == ORANGE.project_colors["unread"][0]
+        elif orange_theme:
+            expected = {"running": "#FFD77D", "one": "#AEE1BC", "older-0": "#F7EEEA",
+                        "older-1": "#D5D8EF", "older-2": "#F7EEEA", "older-3": "#F7EEEA"}
+            for thread_id, fill in expected.items():
+                link = popup.links[thread_id]
+                assert link.fill == fill
+                link.set_hover(False)
+                fills = [link.itemcget(item, "fill") for item in link.find_withtag("surface")
+                         if link.type(item) == "rectangle"]
+                assert fills[-1] == fill
+        if orange_theme:
             check_antialiased_corners(first, "surface")
-        assert first.winfo_width() == first.winfo_height()
+            assert first.winfo_height() < first.winfo_width()
+            for card, line_count in ((first, 1), (second, 2)):
+                title, = card.find_withtag("session-title")
+                assert card.itemcget(title, "text").count("\n") + 1 == line_count
+                status_bottom = card.bbox("session-status")[3]
+                time_box = card.bbox("session-time")
+                assert time_box[1] - status_bottom == max(1, round(4 * window.scale))
+                assert time_box[3] < card.winfo_height()
+        else:
+            assert first.winfo_width() == first.winfo_height()
         assert second.winfo_width() == first.winfo_width()
+        assert second.winfo_height() == first.winfo_height()
         assert first.winfo_rooty() == second.winfo_rooty()
         assert first.winfo_rootx() < second.winfo_rootx()
         assert (popup.winfo_rootx() >= one.winfo_rootx() + one.winfo_width()
                 or popup.winfo_rootx() + popup.winfo_width() <= one.winfo_rootx())
-        if orange_demo:
+        if orange_theme:
             left, _, right, _ = work_area(one)
             root_left, _, root_right, _ = screen_box(root)
             if max(root_left - left, right - root_right) >= round(253 * window.scale):
@@ -311,7 +389,7 @@ def check_window(store, *, orange_demo=False):
         window.collapse_button.invoke()
         until(root, lambda: window.floating is not None and window.floating.winfo_viewable())
         assert root.state() == "withdrawn"
-        if orange_demo:
+        if orange_theme:
             assert not user32.IsWindowVisible(window.rounded_window.overlay)
             check_window_overlay(window.floating, window.floating.rounded_window)
         face = window.floating.face
@@ -342,7 +420,7 @@ def check_window(store, *, orange_demo=False):
         idle_alpha = float(window.floating.attributes("-alpha"))
         face.event_generate("<Enter>")
         assert 0 < idle_alpha < float(window.floating.attributes("-alpha")) < 1
-        if orange_demo:
+        if orange_theme:
             until(root, lambda: window.floating.tooltip.winfo_viewable())
             assert window.floating.rounded_window.shape is not None
             assert window.floating.art.width() == round(window.floating.size * 0.85)
@@ -356,7 +434,7 @@ def check_window(store, *, orange_demo=False):
               and window.floating.winfo_rootx() < x0 - 20)
         moved = screen_box(window.floating)[:2]
         assert moved[1] > y0
-        if orange_demo:
+        if orange_theme:
             check_window_overlay(window.floating, window.floating.rounded_window)
         face.event_generate("<ButtonPress-1>", x=20, y=20)
         face.event_generate("<ButtonRelease-1>", x=20, y=20)
@@ -375,7 +453,7 @@ def check_window(store, *, orange_demo=False):
         window.restore()
         until(root, lambda: root.state() == "normal" and window.floating is None)
         assert alert_timer not in root.tk.splitlist(root.tk.call("after", "info"))
-        if orange_demo:
+        if orange_theme:
             assert not window_style(root) & WS_CAPTION
             assert window.rounded_window.shape is not None
             check_window_overlay(root, window.rounded_window)
@@ -386,8 +464,12 @@ def check_window(store, *, orange_demo=False):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--orange-demo", action="store_true")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--preview", action="store_true")
+    mode.add_argument("--orange-demo", action="store_true", help=argparse.SUPPRESS)
+    mode.add_argument("--project-color-demo", choices=("vivid-pastels", "high-contrast"))
     options = parser.parse_args()
     with tempfile.TemporaryDirectory() as temp:
-        check_window(TaskStore(Path(temp) / "notes.sqlite"), orange_demo=options.orange_demo)
+        check_window(TaskStore(Path(temp) / "notes.sqlite"), preview=options.preview,
+                     project_color_demo=options.project_color_demo)
     print("Windows sticky notes smoke test passed")

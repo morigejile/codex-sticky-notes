@@ -231,6 +231,11 @@ def _thread_project(row, desktop, projects, aliases, workspaces):
     return "unassigned", "未分组", ""
 
 
+def is_finished_and_read(thread):
+    return (thread["status"] in {"completed", "failed", "interrupted"}
+            and thread.get("unread") is False)
+
+
 def group_threads(threads):
     groups = {}
     for thread in sorted(threads, key=lambda item: (-item["updated"], item["id"])):
@@ -251,8 +256,7 @@ def group_threads(threads):
             group["status"] = "unread"
         elif group["running"]:
             group["status"] = "running"
-        elif all(thread["status"] in {"completed", "failed", "interrupted"}
-                 and thread["unread"] is False for thread in members):
+        elif all(is_finished_and_read(thread) for thread in members):
             group["status"] = "read"
         else:
             group["status"] = "unknown"

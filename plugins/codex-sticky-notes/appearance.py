@@ -5,7 +5,7 @@ import tkinter as tk
 from datetime import datetime
 from tkinter import font as tkfont
 
-from data import STATUS_LABELS
+from data import STATUS_LABELS, is_finished_and_read
 from note_icons import corner_images, icon
 from palette import palette_for
 
@@ -47,6 +47,37 @@ def rounded_indicator(control, scale, *, on_hero=False, text_gap=0):
         compound="left", selectcolor=control["bg"], relief="flat", offrelief="flat",
         overrelief="flat", bd=0,
     )
+
+
+def capsule_switch(parent, text, variable, command, scale):
+    palette = palette_for(parent)
+    bg = parent["bg"]
+    control = tk.Checkbutton(
+        parent, text=text, variable=variable, command=command,
+        font=ui_font(parent, 10), bg=bg, activebackground=bg,
+        fg=palette.muted, activeforeground=palette.ink, selectcolor=bg,
+        indicatoron=False, bd=0, relief="flat", offrelief="flat", overrelief="flat",
+        highlightthickness=1, highlightbackground=bg, highlightcolor=palette.accent,
+        compound="right", padx=round(5 * scale), cursor="hand2",
+    )
+    radius = round(10 * scale)
+    width, height = round(38 * scale), 2 * radius
+    thumb = icon(control, "circle", height, palette.card)
+
+    def switch_image(track, enabled):
+        photo = tk.PhotoImage(master=control, width=width, height=height)
+        photo.put(track, to=(radius, 0, width - radius, height))
+        positions = ((0, 0), (width - radius, 0), (0, radius), (width - radius, radius))
+        for (x, y), corner in zip(positions, corner_images(control, radius, track, track)):
+            photo.tk.call(photo, "copy", corner, "-to", x, y)
+        photo.tk.call(photo, "copy", thumb, "-to", width - height if enabled else 0, 0)
+        return photo
+
+    control.switch_images = (switch_image(palette.scroll_hover, False),
+                             switch_image(palette.accent, True))
+    control.configure(image=control.switch_images[0], selectimage=control.switch_images[1])
+    control.bind("<Return>", lambda _: control.invoke())
+    return control
 
 
 def status_dot(canvas, x, y, scale, color, *, smooth):
@@ -233,7 +264,7 @@ def two_line_text(text, font, width):
 
 
 class ProjectCard(tk.Canvas):
-    def __init__(self, parent, title, hint, status, caption, scale):
+    def __init__(self, parent, title, hint, status, caption, scale, *, fills=None):
         self.palette = palette_for(parent)
         super().__init__(parent, bg=parent["bg"], bd=0, highlightthickness=0, width=1, height=1,
                          cursor="hand2", takefocus=True)
@@ -241,6 +272,7 @@ class ProjectCard(tk.Canvas):
         self.hint = hint
         self.status = status
         self.caption = caption
+        self.fills = fills
         self.scale = scale
         self.selected = False
         self.focused = False
@@ -272,6 +304,9 @@ class ProjectCard(tk.Canvas):
             return
         palette = self.palette
         paper, hover, border, ink = palette.project_colors[self.status]
+        fills = self.fills or palette.status_backgrounds.get(self.status)
+        if fills is not None:
+            paper, hover = fills
         surface = hover if self.selected else paper
         pad = round(13 * self.scale)
         radius = round(palette.tile_radius * self.scale)
@@ -339,14 +374,22 @@ class SessionCard(tk.Canvas):
         self.status_ink = palette.status_colors.get(status, palette.muted)
         self.fill, self.hover_fill, self.border = palette.field, palette.hover, palette.line
         if thread["unread_completed"]:
-            self.fill, self.hover_fill, self.border, self.status_ink = palette.project_colors["unread"]
+            state = "unread"
         elif status == "running":
-            self.fill, self.hover_fill, self.border, self.status_ink = palette.project_colors["running"]
-        elif palette.precise_corners and status in {"stale", "unknown"}:
-            self.fill, self.hover_fill, self.border, self.status_ink = palette.project_colors["unknown"]
+            state = "running"
+        elif is_finished_and_read(thread):
+            state = "read"
+        else:
+            state = "unknown"
+        if state in {"unread", "running"} or (palette.precise_corners and status in {"stale", "unknown"}):
+            self.fill, self.hover_fill, self.border, self.status_ink = palette.project_colors[state]
+        self.fill, self.hover_fill = palette.status_backgrounds.get(state, (self.fill, self.hover_fill))
         self.scale = scale
         self.title_font = title_font
         self.detail_font = detail_font
+        self.title_top = round((14 if palette.precise_corners else 29) * scale)
+        self.status_offset = round(9 * scale)
+        self.time_gap = max(1, round(4 * scale))
         self.command = command
         self.hovered = False
         self.focused = False
@@ -375,37 +418,46 @@ class SessionCard(tk.Canvas):
         self.focused = active
         self.paint()
 
+    def compact_height(self):
+        title_bottom = self.title_top + 2 * self.title_font.metrics("linespace")
+        detail_height = self.detail_font.metrics("linespace")
+        status_bottom = title_bottom + self.status_offset + (detail_height + 1) // 2
+        return status_bottom + self.time_gap + detail_height + round(9 * self.scale)
+
     def paint(self):
         self.delete("all")
-        side = self.winfo_width()
-        if side <= 2:
+        card_width, height = self.winfo_width(), self.winfo_height()
+        if min(card_width, height) <= 2:
             return
         s = self.scale
         palette = self.palette
         pad = round(10 * s)
-        width = side - 2 * pad
+        width = card_width - 2 * pad
         radius = round((palette.tile_radius - 3) * s)
         surface = self.hover_fill if self.hovered else self.fill
         outline = palette.accent if self.hovered or self.focused else self.border
         if palette.precise_corners:
-            paint_smooth_rect(self, 1, 1, side - 2, side - 2, radius, surface, outline)
+            paint_smooth_rect(self, 1, 1, card_width - 2, height - 2, radius, surface, outline)
         else:
-            rounded_rect(self, 1, 1, side - 2, side - 2, radius, fill=surface, outline=outline)
-        title_top = round((14 if palette.precise_corners else 29) * s)
+            rounded_rect(self, 1, 1, card_width - 2, height - 2, radius,
+                         fill=surface, outline=outline)
         name = two_line_text(self.title, self.title_font, width)
-        title_end = title_top + (name.count("\n") + 1) * self.title_font.metrics("linespace")
-        status_y = title_end + round(9 * s) if palette.precise_corners else round(16 * s)
+        title_end = self.title_top + (name.count("\n") + 1) * self.title_font.metrics("linespace")
+        status_y = title_end + self.status_offset if palette.precise_corners else round(16 * s)
         status_dot(self, pad, status_y, s, self.status_ink, smooth=palette.precise_corners)
-        self.create_text(pad + round(10 * s), status_y, anchor="w", font=self.detail_font,
-                         text=self.caption, fill=self.status_ink)
-
-        self.create_text(pad, title_top, text=name, anchor="nw", font=self.title_font, fill=palette.ink)
-        bottom = side - round((13 if palette.precise_corners else 9) * s)
+        status = self.create_text(pad + round(10 * s), status_y, anchor="w", font=self.detail_font,
+                                  text=self.caption, fill=self.status_ink, tags=("session-status",))
+        self.create_text(pad, self.title_top, text=name, anchor="nw", font=self.title_font,
+                         fill=palette.ink, tags=("session-title",))
+        if palette.precise_corners:
+            time_top = self.bbox(status)[3] + self.time_gap
+            self.create_text(pad, time_top, text=self.when, anchor="nw", font=self.detail_font,
+                             fill=palette.muted, tags=("session-time",))
+            return
+        bottom = height - round(9 * s)
         self.create_text(pad, bottom, text=self.when, anchor="sw", font=self.detail_font,
                          fill=palette.muted)
 
-        if palette.precise_corners:
-            return
         detail_line = self.detail_font.metrics("linespace")
         detail_top = title_end + round(3 * s)
         lines = (bottom - detail_line - round(3 * s) - detail_top) // detail_line
