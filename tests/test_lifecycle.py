@@ -1,0 +1,52 @@
+import sys
+import unittest
+from pathlib import Path
+from uuid import uuid4
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "plugins" / "codex-sticky-notes"))
+from lifecycle import Event, Instance
+from startup import LaunchState
+
+
+class LifecycleTests(unittest.TestCase):
+    def test_duplicate_instance_and_release(self):
+        name = "test-" + uuid4().hex
+        first = Instance(name)
+        self.addCleanup(first.close)
+        self.assertTrue(first.primary)
+        second = Instance(name)
+        self.assertFalse(second.primary)
+        self.assertTrue(Instance.running(name))
+        first.close()
+        self.assertFalse(Instance.running(name))
+        third = Instance(name)
+        self.addCleanup(third.close)
+        self.assertTrue(third.primary)
+
+    def test_activation_is_consumed_once(self):
+        name = "test-" + uuid4().hex
+        receiver, sender = Event(name), Event(name)
+        self.addCleanup(receiver.close)
+        self.addCleanup(sender.close)
+        self.assertFalse(receiver.wait())
+        sender.signal()
+        self.assertTrue(receiver.wait())
+        self.assertFalse(receiver.wait())
+
+    def test_start_retry_close_and_next_codex_launch(self):
+        state = LaunchState()
+        first = {(123, 456)}
+        self.assertFalse(state.needs_launch(set(), False))
+        self.assertTrue(state.needs_launch(first, False))
+        self.assertTrue(state.needs_launch(first, False))
+        self.assertFalse(state.needs_launch(first, True))
+        self.assertFalse(state.needs_launch(first, False))
+        self.assertFalse(state.needs_launch(set(), False))
+        self.assertTrue(state.needs_launch(first, False))
+        self.assertFalse(state.needs_launch(first, True))
+        # A recycled PID with a different creation time represents a fresh launch.
+        self.assertTrue(state.needs_launch({(123, 789)}, False))
+
+
+if __name__ == "__main__":
+    unittest.main()

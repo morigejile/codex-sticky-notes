@@ -1,0 +1,15 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "codex-sticky-notes",
+  "version": "0.3.1",
+  "description": "查看本机 Codex 会话进展和管理 Windows 便签待办。",
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "Codex 便签",
+        "shortDescription": "查看会话进展，记录本地待办。",
+        "longDescription": "在 Codex 聊天里查看本机会话、管理待办或打开可置顶的 Windows 便签窗口。"
+      }
+    }
+  }
+}

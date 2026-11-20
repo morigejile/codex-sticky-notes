@@ -1,0 +1,12 @@
+{
+  "name": "local-codex-sticky-notes",
+  "interface": { "displayName": "本地便签" },
+  "plugins": [
+    {
+      "name": "codex-sticky-notes",
+      "source": { "source": "local", "path": "./plugins/codex-sticky-notes" },
+      "policy": { "installation": "AVAILABLE", "authentication": "ON_INSTALL" },
+      "category": "Productivity"
+    }
+  ]
+}
