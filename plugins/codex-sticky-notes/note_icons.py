@@ -131,11 +131,16 @@ def icon(widget, name, size, ink, *, checkmark=None, text_gap=0):
     return cache[key]
 
 
-def rounded_surface_image(widget, width, height, radius, fill, border):
-    radius = min(radius, width // 2, height // 2)
+def corner_images(widget, radius, fill, border):
+    owner = widget.winfo_toplevel()
+    if not hasattr(owner, "notes_corner_images"):
+        owner.notes_corner_images = {}
+    key = radius, fill, border
+    if key in owner.notes_corner_images:
+        return owner.notes_corner_images[key]
+
     fill_rgb, border_rgb = rgb(fill), rgb(border)
-    fill_pixel, border_pixel = bytes((*fill_rgb, 255)), bytes((*border_rgb, 255))
-    rows = []
+    left_rows, right_rows = [], []
     for row in range(radius):
         corner = []
         for column in range(radius):
@@ -145,9 +150,14 @@ def rounded_surface_image(widget, width, height, radius, fill, border):
             color = (round(edge + (face - edge) * inside)
                      for edge, face in zip(border_rgb, fill_rgb))
             corner.append(bytes((*color, round(alpha * 255))))
-        center = (border_pixel if row == 0 else fill_pixel) * (width - 2 * radius)
-        rows.append(b"\0" + b"".join(corner) + center + b"".join(reversed(corner)))
-    middle = b"\0" + border_pixel + fill_pixel * (width - 2) + border_pixel
-    pixels = b"".join(rows) + middle * (height - 2 * radius) + b"".join(reversed(rows))
-    return tk.PhotoImage(master=widget, data=base64.b64encode(png_image(width, height, pixels)),
-                         format="png")
+        left_rows.append(b"\0" + b"".join(corner))
+        right_rows.append(b"\0" + b"".join(reversed(corner)))
+
+    photos = tuple(
+        tk.PhotoImage(master=owner,
+                      data=base64.b64encode(png_image(radius, radius, b"".join(rows))),
+                      format="png")
+        for rows in (left_rows, right_rows, reversed(left_rows), reversed(right_rows))
+    )
+    owner.notes_corner_images[key] = photos
+    return photos

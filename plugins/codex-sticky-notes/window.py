@@ -10,25 +10,25 @@ import tkinter as tk
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from ctypes import wintypes
-from pathlib import Path, PureWindowsPath
+from pathlib import PureWindowsPath
 from tkinter import messagebox, simpledialog, ttk
 from tkinter import font as tkfont
 from urllib.parse import quote
 
 from appearance import (
     PillButton, ProjectCard, RoundedSurface, SessionCard, label, note_mark, paint_hills,
-    rounded_indicator, rounded_rect, text_button, two_line_text, ui_font, wrap,
+    paint_smooth_rect, rounded_indicator, rounded_rect, text_button, two_line_text, ui_font, wrap,
 )
 from data import TaskStore, group_threads, read_project_threads
 from lifecycle import Event, Instance
 from native_frame import (
     RoundedWindow, hide_window_frame, round_scroll_bottom, set_resize_cursor, set_window_bounds,
 )
+from note_art import load_note_art
 from note_icons import icon
 from palette import ORANGE, SAGE, palette_for
 
 TRANSPARENT = "#ff00fe"
-NOTE_ASSETS = Path(__file__).with_name("assets")
 
 
 class MonitorInfo(ctypes.Structure):
@@ -88,18 +88,6 @@ def layout_tiles(cards, width, scale, *, gap, target, maximum, column_limit, hei
                   pady=(0, gap))
 
 
-def load_note_art(widget, size):
-    try:
-        original = tk.PhotoImage(master=widget, file=NOTE_ASSETS / "orange-notes-pinned.png")
-    except tk.TclError:
-        try:
-            original = tk.PhotoImage(master=widget, file=NOTE_ASSETS / "orange-notes.png")
-        except tk.TclError:
-            return None
-    step = max(1, round(original.width() / size))
-    return original.subsample(step)
-
-
 class FloatingNote(tk.Toplevel):
     def __init__(self, root, restore):
         super().__init__(root)
@@ -124,7 +112,8 @@ class FloatingNote(tk.Toplevel):
                               highlightthickness=0, cursor="hand2", takefocus=True)
         self.face.pack()
         if self.palette.precise_corners:
-            self.rounded_window = RoundedWindow(self, round(18 * self.scale))
+            self.rounded_window = RoundedWindow(
+                self, round(18 * self.scale), corner_colors=lambda: (self.face["bg"],) * 2)
         self.art = load_note_art(self.face, round(self.size * 0.85)) if self.palette.precise_corners else None
         self.face.bind("<Enter>", lambda _: self.set_hover(True))
         self.face.bind("<Leave>", lambda _: self.set_hover(False))
@@ -143,6 +132,7 @@ class FloatingNote(tk.Toplevel):
         fill = self.palette.action if hovered else self.palette.floating
         if self.palette.precise_corners:
             canvas.configure(bg=fill)
+            self.rounded_window.refresh()
         else:
             rounded_rect(canvas, 2, 2, size - 2, size - 2, size * 0.30, fill=fill,
                          outline=self.palette.hero_border if hovered else fill, width=1)
@@ -478,7 +468,8 @@ class StickyWindow:
         if orange_demo:
             root.bind("<Map>", self.on_map, add="+")
             self.rounded_window = RoundedWindow(
-                root, round(30 * self.scale), resize_margin=round(6 * self.scale))
+                root, round(30 * self.scale), resize_margin=round(6 * self.scale),
+                corner_colors=lambda: (self.palette.hero, self.palette.paper))
             root.bind("<ButtonPress-1>", self.resize_from_edge, add="+")
             root.bind("<B1-Motion>", self.drag_window, add="+")
             root.bind("<ButtonRelease-1>", self.finish_window_drag, add="+")
@@ -583,7 +574,7 @@ class StickyWindow:
 
         size = round(64 * self.scale)
         art = tk.Canvas(top, width=size + 12, height=size, bg=palette.hero, highlightthickness=0)
-        art.create_oval(9, 4, size + 3, size - 4, fill="#fa9628", outline="")
+        paint_smooth_rect(art, 9, 4, size - 6, size - 8, size // 2, "#fa9628", "#fa9628")
         self.hero_image = load_note_art(art, size)
         if self.hero_image is None:
             note_mark(art, 0, 0, size / 58, palette.ink)
@@ -668,7 +659,7 @@ class StickyWindow:
     def make_content_panel(self, parent, *, pady=0):
         palette = self.palette
         if self.orange_demo:
-            shell = RoundedSurface(parent, radius=round(17 * self.scale))
+            shell = RoundedSurface(parent, radius=round(17 * self.scale), antialias=True)
             shell.pack(fill="x", pady=pady)
             panel = tk.Frame(shell, bg=palette.card)
             panel.pack(fill="x", padx=round(14 * self.scale), pady=round(12 * self.scale))
@@ -774,6 +765,8 @@ class StickyWindow:
 
     def toggle_pin(self):
         self.root.attributes("-topmost", self.pinned.get())
+        if self.orange_demo:
+            self.rounded_window.refresh()
 
     def on_unmap(self, event):
         if event.widget is self.root and not self.collapsed and self.root.state() == "iconic":

@@ -6,7 +6,7 @@ from datetime import datetime
 from tkinter import font as tkfont
 
 from data import STATUS_LABELS
-from note_icons import icon, rounded_surface_image
+from note_icons import corner_images, icon
 from palette import palette_for
 
 FONT = "Microsoft YaHei UI"
@@ -81,6 +81,27 @@ def rounded_rect(canvas, x1, y1, x2, y2, radius, *, precise=False, **options):
     return canvas.create_polygon(points, smooth=True, splinesteps=24, **options)
 
 
+def paint_smooth_rect(canvas, x, y, width, height, radius, fill, border, *, tag="surface"):
+    radius = min(round(radius), width // 2, height // 2)
+    if radius < 1:
+        return
+    right, bottom = x + width, y + height
+
+    def band(left, top, right, bottom, color):
+        if left < right and top < bottom:
+            canvas.create_rectangle(left, top, right, bottom, fill=color, outline="", tags=(tag,))
+
+    # Keep panel height out of the image cache. Only the four arcs need alpha.
+    band(x + radius, y, right - radius, bottom, border)
+    band(x, y + radius, right, bottom - radius, border)
+    band(x + radius, y + 1, right - radius, bottom - 1, fill)
+    band(x + 1, y + radius, right - 1, bottom - radius, fill)
+    positions = ((x, y), (right - radius, y), (x, bottom - radius),
+                 (right - radius, bottom - radius))
+    for (left, top), photo in zip(positions, corner_images(canvas, radius, fill, border)):
+        canvas.create_image(left, top, image=photo, anchor="nw", tags=(tag,))
+
+
 def note_mark(canvas, x, y, scale, color):
     def point(a, b):
         return x + a * scale, y + b * scale
@@ -129,7 +150,6 @@ class RoundedSurface(tk.Frame):
         self.border = border or palette.line
         self.precise_corners = palette.precise_corners
         self.antialias = antialias
-        self.surface_image = None
         self.canvas = tk.Canvas(self, bg=outside, highlightthickness=0, bd=0)
         self.canvas.place(x=0, y=0, relwidth=1, relheight=1)
         self.canvas.bind("<Configure>", lambda _: self.paint())
@@ -142,9 +162,8 @@ class RoundedSurface(tk.Frame):
         self.canvas.delete("all")
         width, height = self.canvas.winfo_width(), self.canvas.winfo_height()
         if self.antialias and min(width, height) > 3:
-            self.surface_image = rounded_surface_image(
-                self.canvas, width - 2, height - 2, self.radius, self.fill, self.border)
-            self.canvas.create_image(1, 1, image=self.surface_image, anchor="nw")
+            paint_smooth_rect(self.canvas, 1, 1, width - 2, height - 2,
+                              self.radius, self.fill, self.border)
         elif min(width, height) > 2:
             rounded_rect(self.canvas, 1, 1, width - 2, height - 2,
                          min(self.radius, (width - 2) / 2, (height - 2) / 2),
@@ -255,10 +274,11 @@ class ProjectCard(tk.Canvas):
         surface = hover if self.selected else paper
         pad = round(13 * self.scale)
         radius = round(palette.tile_radius * self.scale)
-        rounded_rect(self, 1, 1, width - 2, height - 2, radius,
-                     precise=palette.precise_corners,
-                     fill=surface,
-                     outline=ink if self.focused or self.selected else border)
+        outline = ink if self.focused or self.selected else border
+        if palette.precise_corners:
+            paint_smooth_rect(self, 1, 1, width - 2, height - 2, radius, surface, outline)
+        else:
+            rounded_rect(self, 1, 1, width - 2, height - 2, radius, fill=surface, outline=outline)
         x, y, s = pad, round(12 * self.scale), self.scale
         if palette.precise_corners:
             folder = icon(self, "folder", round(25 * s), palette.ink)
@@ -289,8 +309,12 @@ class ProjectCard(tk.Canvas):
         caption = shorten(self.caption, self.small_font, available)
         right = left + padding + self.small_font.measure(caption)
         radius = self.badge_height / 2
-        rounded_rect(self, left, center - radius, right, center + radius, radius,
-                     precise=True, fill=fill, outline=border, tags=("status-badge",))
+        if self.palette.precise_corners:
+            paint_smooth_rect(self, left, round(center - radius), right - left,
+                              self.badge_height, radius, fill, border, tag="status-badge")
+        else:
+            rounded_rect(self, left, center - radius, right, center + radius, radius,
+                         precise=True, fill=fill, outline=border, tags=("status-badge",))
         status_dot(self, left + round(6 * s), center, s, ink,
                    smooth=self.palette.precise_corners)
         self.create_text(left + text_offset, center, text=caption, anchor="w",
@@ -355,10 +379,13 @@ class SessionCard(tk.Canvas):
         palette = self.palette
         pad = round(10 * s)
         width = side - 2 * pad
-        rounded_rect(self, 1, 1, side - 2, side - 2, round((palette.tile_radius - 3) * s),
-                     precise=palette.precise_corners,
-                     fill=self.hover_fill if self.hovered else self.fill,
-                     outline=palette.accent if self.hovered or self.focused else self.border)
+        radius = round((palette.tile_radius - 3) * s)
+        surface = self.hover_fill if self.hovered else self.fill
+        outline = palette.accent if self.hovered or self.focused else self.border
+        if palette.precise_corners:
+            paint_smooth_rect(self, 1, 1, side - 2, side - 2, radius, surface, outline)
+        else:
+            rounded_rect(self, 1, 1, side - 2, side - 2, radius, fill=surface, outline=outline)
         title_top = round((14 if palette.precise_corners else 29) * s)
         name = two_line_text(self.title, self.title_font, width)
         title_end = title_top + (name.count("\n") + 1) * self.title_font.metrics("linespace")

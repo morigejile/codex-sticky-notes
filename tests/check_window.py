@@ -5,7 +5,7 @@ import sys
 import tempfile
 import time
 import tkinter as tk
-from ctypes import c_int, wintypes
+from ctypes import byref, c_int, wintypes
 from tkinter import font as tkfont
 from pathlib import Path
 from unittest.mock import patch
@@ -56,6 +56,24 @@ def check_scroll_corners(canvas, inset):
         assert not gdi32.PtInRegion(region, width - inset - 2, height - 2)
     finally:
         gdi32.DeleteObject(region)
+
+
+def check_antialiased_corners(canvas, tag):
+    corners = [item for item in canvas.find_withtag(tag) if canvas.type(item) == "image"]
+    assert len(corners) == 4
+    for item, (right, bottom) in zip(corners, [(False, False), (True, False),
+                                               (False, True), (True, True)]):
+        photo = canvas.itemcget(item, "image")
+        size = int(canvas.tk.call("image", "width", photo))
+        x, y = size - 1 if right else 0, size - 1 if bottom else 0
+        assert canvas.tk.getboolean(canvas.tk.call(photo, "transparency", "get", x, y))
+
+
+def check_window_overlay(widget, rounded_window):
+    bounds = wintypes.RECT()
+    assert user32.IsWindowVisible(rounded_window.overlay)
+    assert user32.GetWindowRect(rounded_window.overlay, byref(bounds))
+    assert (bounds.left, bounds.top, bounds.right, bounds.bottom) == screen_box(widget)
 
 
 def check_window(store, *, orange_demo=False):
@@ -112,6 +130,7 @@ def check_window(store, *, orange_demo=False):
             assert window.rounded_window.shape is not None
             _, bounds = window.rounded_window.shape
             assert bounds[:2] == (0, 0)
+            check_window_overlay(root, window.rounded_window)
             old_x, old_y, _, _ = screen_box(root)
             masthead = root.winfo_children()[0]
             masthead.event_generate("<ButtonPress-1>", x=200, y=40)
@@ -119,9 +138,10 @@ def check_window(store, *, orange_demo=False):
             masthead.event_generate("<ButtonRelease-1>", x=227, y=51)
             until(root, lambda: root.winfo_rootx() == old_x + 27)
             assert root.winfo_rooty() == old_y + 11
+            check_window_overlay(root, window.rounded_window)
             set_window_bounds(root, old_x, old_y, root.winfo_width(), root.winfo_height())
             until(root, lambda: screen_box(root)[:2] == (old_x, old_y))
-            assert window.hero_image.width() > 0
+            assert window.hero_image.width() == round(64 * window.scale)
             top = masthead.winfo_children()[0]
             title = next((child for child in top.winfo_children() if isinstance(child, tk.Label)), None)
             assert title is not None
@@ -140,10 +160,9 @@ def check_window(store, *, orange_demo=False):
             entry_shell = window.entry.master
             add_button = next(child for child in entry_shell.master.winfo_children()
                               if isinstance(child, PillButton))
-            for surface in (entry_shell, add_button):
-                background, = surface.canvas.find_all()
-                assert surface.canvas.type(background) == "image"
-                assert surface.surface_image.transparency_get(0, 0)
+            for surface in (entry_shell, add_button, window.task_list.master.master,
+                            window.thread_list.master.master):
+                check_antialiased_corners(surface.canvas, "surface")
             assert tkfont.Font(root, font=window.entry["font"]).cget("size") == 10
             assert not window.thread_feedback.get()
         assert window.task_list.winfo_ismapped()
@@ -173,10 +192,14 @@ def check_window(store, *, orange_demo=False):
         one, two, read, unknown = window.project_cards.values()
         assert len({card.status for card in (one, two, read, unknown)}) == 4
         for card in window.project_cards.values():
-            badge, = card.find_withtag("status-badge")
-            paper, _, border, _ = palette.project_colors[card.status]
-            assert card.itemcget(badge, "fill") == paper
-            assert card.itemcget(badge, "outline") == border
+            if orange_demo:
+                check_antialiased_corners(card, "surface")
+                check_antialiased_corners(card, "status-badge")
+            else:
+                badge, = card.find_withtag("status-badge")
+                paper, _, border, _ = palette.project_colors[card.status]
+                assert card.itemcget(badge, "fill") == paper
+                assert card.itemcget(badge, "outline") == border
         assert one.winfo_rootx() < two.winfo_rootx() < read.winfo_rootx()
         assert one.winfo_rooty() == two.winfo_rooty() == read.winfo_rooty()
         if orange_demo:
@@ -184,10 +207,9 @@ def check_window(store, *, orange_demo=False):
         if orange_demo:
             assert one.winfo_height() < one.winfo_width()
             title_item, = two.find_withtag("project-title")
-            badge_item, = two.find_withtag("status-badge")
-            gap = two.bbox(badge_item)[1] - two.bbox(title_item)[3]
+            gap = two.bbox("status-badge")[1] - two.bbox(title_item)[3]
             assert 0 < gap <= round(10 * window.scale)
-            assert sum(one.type(item) == "image" for item in one.find_all()) == 2
+            assert sum(one.type(item) == "image" for item in one.find_all()) == 10
             assert one.title_font.cget("size") == 9 and one.small_font.cget("size") == 7
             width = root.winfo_width()
             middle = root.winfo_height() // 2
@@ -235,7 +257,7 @@ def check_window(store, *, orange_demo=False):
         assert list(popup.links) == ["running", "one", *older_ids]
         first, second = popup.links["running"], popup.links["one"]
         if orange_demo:
-            assert any(first.type(item) == "image" for item in first.find_all())
+            check_antialiased_corners(first, "surface")
         assert first.winfo_width() == first.winfo_height()
         assert second.winfo_width() == first.winfo_width()
         assert first.winfo_rooty() == second.winfo_rooty()
@@ -284,6 +306,9 @@ def check_window(store, *, orange_demo=False):
         window.collapse_button.invoke()
         until(root, lambda: window.floating is not None and window.floating.winfo_viewable())
         assert root.state() == "withdrawn"
+        if orange_demo:
+            assert not user32.IsWindowVisible(window.rounded_window.overlay)
+            check_window_overlay(window.floating, window.floating.rounded_window)
         face = window.floating.face
 
         def indicator_state():
@@ -315,7 +340,7 @@ def check_window(store, *, orange_demo=False):
         if orange_demo:
             until(root, lambda: window.floating.tooltip.winfo_viewable())
             assert window.floating.rounded_window.shape is not None
-            assert window.floating.art.width() > 0
+            assert window.floating.art.width() == round(window.floating.size * 0.85)
             face.event_generate("<Leave>")
             until(root, lambda: not window.floating.tooltip.winfo_viewable())
         x0, y0, _, _ = screen_box(window.floating)
@@ -326,6 +351,8 @@ def check_window(store, *, orange_demo=False):
               and window.floating.winfo_rootx() < x0 - 20)
         moved = screen_box(window.floating)[:2]
         assert moved[1] > y0
+        if orange_demo:
+            check_window_overlay(window.floating, window.floating.rounded_window)
         face.event_generate("<ButtonPress-1>", x=20, y=20)
         face.event_generate("<ButtonRelease-1>", x=20, y=20)
         until(root, lambda: root.state() == "normal" and window.floating is None)
@@ -345,6 +372,7 @@ def check_window(store, *, orange_demo=False):
         if orange_demo:
             assert not window_style(root) & WS_CAPTION
             assert window.rounded_window.shape is not None
+            check_window_overlay(root, window.rounded_window)
     finally:
         pointer.stop()
         window.close()
