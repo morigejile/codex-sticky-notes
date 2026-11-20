@@ -248,6 +248,7 @@ class ProjectCard(tk.Canvas):
         self.small_font = tkfont.Font(self, font=ui_font(self, 8))
         self.title_top = round((32 if self.palette.precise_corners else 36) * scale)
         self.badge_height = self.small_font.metrics("linespace") + round(4 * scale)
+        self.title_badge_gap = max(1, round(3 * scale))
         self.bind("<Configure>", lambda _: self.paint())
         self.bind("<FocusIn>", lambda _: self.set_focus(True))
         self.bind("<FocusOut>", lambda _: self.set_focus(False))
@@ -262,7 +263,7 @@ class ProjectCard(tk.Canvas):
 
     def compact_height(self):
         return (self.title_top + 2 * self.title_font.metrics("linespace")
-                + self.badge_height + round(14 * self.scale))
+                + self.title_badge_gap + self.badge_height + round(8 * self.scale))
 
     def paint(self):
         self.delete("all")
@@ -295,11 +296,15 @@ class ProjectCard(tk.Canvas):
                              text=shorten(self.hint, self.small_font, hint_width),
                              anchor="e", font=self.small_font, fill=palette.muted)
         name = two_line_text(self.title, self.title_font, text_width)
-        self.create_text(pad, self.title_top, text=name, anchor="nw", font=self.title_font,
-                         fill=palette.ink, tags=("project-title",))
-        badge_bottom = (round(8 * s) + self.badge_height / 2
-                        if palette.precise_corners else round(18 * s))
-        self.paint_status_badge(pad, height - badge_bottom, surface, border, ink)
+        title_item = self.create_text(pad, self.title_top, text=name, anchor="nw",
+                                      font=self.title_font, fill=palette.ink,
+                                      tags=("project-title",))
+        if palette.precise_corners:
+            title_bottom = self.bbox(title_item)[3]
+            badge_center = title_bottom + self.title_badge_gap + self.badge_height / 2
+        else:
+            badge_center = height - round(18 * s)
+        self.paint_status_badge(pad, badge_center, surface, border, ink)
 
     def paint_status_badge(self, left, center, fill, border, ink):
         s = self.scale

@@ -206,9 +206,14 @@ def check_window(store, *, orange_demo=False):
             assert unknown.winfo_rooty() == one.winfo_rooty()
         if orange_demo:
             assert one.winfo_height() < one.winfo_width()
-            title_item, = two.find_withtag("project-title")
-            gap = two.bbox("status-badge")[1] - two.bbox(title_item)[3]
-            assert 0 < gap <= round(10 * window.scale)
+            for card, line_count in ((one, 1), (two, 2)):
+                title_item, = card.find_withtag("project-title")
+                assert card.itemcget(title_item, "text").count("\n") + 1 == line_count
+                corner = next(item for item in card.find_withtag("status-badge")
+                              if card.type(item) == "image")
+                gap = card.coords(corner)[1] - card.bbox(title_item)[3]
+                assert gap == max(1, round(3 * window.scale))
+                assert card.bbox("status-badge")[3] < card.winfo_height()
             assert sum(one.type(item) == "image" for item in one.find_all()) == 10
             assert one.title_font.cget("size") == 9 and one.small_font.cget("size") == 7
             width = root.winfo_width()
@@ -360,6 +365,7 @@ def check_window(store, *, orange_demo=False):
         root.iconify()
         until(root, lambda: window.floating is not None and window.floating.winfo_viewable())
         assert screen_box(window.floating)[:2] == moved
+        until(root, lambda: window.pending is None)
         face = window.floating.face
         threads = [dict(thread, unread=True, unread_completed=True)
                    if thread["id"] == "running" else thread for thread in threads]
