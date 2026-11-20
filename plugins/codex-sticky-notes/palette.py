@@ -75,7 +75,12 @@ VIVID_PASTEL_BACKGROUNDS = {
 }
 ORANGE_MAIN = replace(
     ORANGE,
-    status_backgrounds={**VIVID_PASTEL_BACKGROUNDS, "read": ("#F7EEEA", "#F3E7E2")},
+    status_backgrounds={
+        "running": VIVID_PASTEL_BACKGROUNDS["unread"],
+        "unread": VIVID_PASTEL_BACKGROUNDS["running"],
+        "read": ("#F7EEEA", "#F3E7E2"),
+        "unknown": VIVID_PASTEL_BACKGROUNDS["unknown"],
+    },
 )
 
 # Normal and selected fills for the project tiles only.

@@ -205,7 +205,7 @@ def check_window(store, *, preview=False, project_color_demo=None):
                 check_antialiased_corners(card, "surface")
                 check_antialiased_corners(card, "status-badge")
                 expected = {
-                    None: ("#FFD77D", "#F7EEEA", "#AEE1BC", "#D5D8EF"),
+                    None: ("#AEE1BC", "#F7EEEA", "#FFD77D", "#D5D8EF"),
                     "vivid-pastels": ("#FFD77D", "#F9BCCB", "#AEE1BC", "#D5D8EF"),
                     "high-contrast": ("#F7B844", "#ED9EAB", "#94D9AB", "#BEC8E1"),
                 }
@@ -320,7 +320,7 @@ def check_window(store, *, preview=False, project_color_demo=None):
             assert first.fill == ORANGE.project_colors["running"][0]
             assert second.fill == ORANGE.project_colors["unread"][0]
         elif orange_theme:
-            expected = {"running": "#FFD77D", "one": "#AEE1BC", "older-0": "#F7EEEA",
+            expected = {"running": "#AEE1BC", "one": "#FFD77D", "older-0": "#F7EEEA",
                         "older-1": "#D5D8EF", "older-2": "#F7EEEA", "older-3": "#F7EEEA"}
             for thread_id, fill in expected.items():
                 link = popup.links[thread_id]
