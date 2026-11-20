@@ -1,5 +1,6 @@
 """Interactive Windows smoke test with temporary tasks and sample sessions."""
 
+import argparse
 import sys
 import tempfile
 import time
@@ -9,6 +10,8 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "plugins" / "codex-sticky-notes"))
 from data import TaskStore
+from native_frame import WS_CAPTION, window_style
+from palette import ORANGE, SAGE
 from window import StickyWindow
 
 
@@ -35,7 +38,7 @@ def pause(root, seconds):
         time.sleep(0.015)
 
 
-def check_window(store):
+def check_window(store, *, orange_demo=False):
     now = int(time.time() * 1000)
     threads = [
         dict(id="one", title="整理会话进展和显示方式", updated=now - 30, progress="已验证测试版。",
@@ -59,7 +62,7 @@ def check_window(store):
                    for index, thread_id in enumerate(older_ids))
     root = tk.Tk()
     root.attributes("-topmost", True)
-    window = StickyWindow(root, store, lambda: threads)
+    window = StickyWindow(root, store, lambda: threads, orange_demo=orange_demo)
     cursor = (-1, -1)
     pointer = patch.object(root, "winfo_pointerxy", side_effect=lambda: cursor)
     pointer.start()
@@ -72,6 +75,13 @@ def check_window(store):
 
     try:
         until(root, lambda: window.threads is not None and window.thread_list.winfo_ismapped())
+        palette = ORANGE if orange_demo else SAGE
+        assert root["bg"] == palette.paper
+        if orange_demo:
+            assert not window_style(root) & WS_CAPTION
+            assert window.hero_image.width() > 0
+            assert not int(window.pin_control["indicatoron"])
+            assert window.pin_control["image"] and window.pin_control["selectimage"]
         assert window.task_list.winfo_ismapped()
         assert window.task_list.winfo_rooty() < window.thread_list.winfo_rooty()
         window.entry.insert(0, "复核本周测试结果")
@@ -82,6 +92,9 @@ def check_window(store):
                         if isinstance(child, tk.Frame))
         checkbox = next(child for child in task_row.winfo_children()
                         if isinstance(child, tk.Checkbutton))
+        if orange_demo:
+            assert not int(checkbox["indicatoron"])
+            assert checkbox["image"] and checkbox["selectimage"]
         checkbox.invoke()
         assert store.list()[0]["done"]
 
@@ -91,6 +104,8 @@ def check_window(store):
         assert one.winfo_rootx() < two.winfo_rootx() < read.winfo_rootx()
         assert one.winfo_rooty() == two.winfo_rooty() == read.winfo_rooty()
         assert one.winfo_width() == one.winfo_height()
+        if orange_demo:
+            assert sum(one.type(item) == "image" for item in one.find_all()) == 2
         original = root.geometry().split("+", 1)[0]
         root.geometry(f"{root.minsize()[0]}x{root.winfo_height()}")
         until(root, lambda: read.winfo_rooty() > one.winfo_rooty())
@@ -103,8 +118,11 @@ def check_window(store):
         until(root, lambda: window.popup is not None and window.popup.winfo_viewable())
         popup = window.popup
         assert popup.anchor is one
+        assert popup.links["one"]["bg"] == palette.card
         assert list(popup.links) == ["running", "one", *older_ids]
         first, second = popup.links["running"], popup.links["one"]
+        if orange_demo:
+            assert any(first.type(item) == "image" for item in first.find_all())
         assert first.winfo_width() == first.winfo_height()
         assert second.winfo_width() == first.winfo_width()
         assert first.winfo_rooty() == second.winfo_rooty()
@@ -159,12 +177,17 @@ def check_window(store):
         until(root, lambda: window.floating is not None and window.floating.winfo_viewable())
         window.restore()
         until(root, lambda: root.state() == "normal" and window.floating is None)
+        if orange_demo:
+            assert not window_style(root) & WS_CAPTION
     finally:
         pointer.stop()
         window.close()
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--orange-demo", action="store_true")
+    options = parser.parse_args()
     with tempfile.TemporaryDirectory() as temp:
-        check_window(TaskStore(Path(temp) / "notes.sqlite"))
+        check_window(TaskStore(Path(temp) / "notes.sqlite"), orange_demo=options.orange_demo)
     print("Windows sticky notes smoke test passed")
