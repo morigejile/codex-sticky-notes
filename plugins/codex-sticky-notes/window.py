@@ -2,7 +2,6 @@
 
 import argparse
 import ctypes
-import math
 import os
 import sqlite3
 import sys
@@ -17,16 +16,19 @@ from tkinter import font as tkfont
 from urllib.parse import quote
 
 from appearance import (
-    FONT, PillButton, ProjectCard, RoundedSurface, SessionCard, label, note_mark, paint_hills,
-    rounded_indicator, rounded_rect, text_button, two_line_text, wrap,
+    PillButton, ProjectCard, RoundedSurface, SessionCard, label, note_mark, paint_hills,
+    rounded_indicator, rounded_rect, text_button, two_line_text, ui_font, wrap,
 )
 from data import TaskStore, group_threads, read_project_threads
 from lifecycle import Event, Instance
-from native_frame import hide_caption, start_window_move
+from native_frame import (
+    RoundedWindow, hide_window_frame, round_scroll_bottom, set_resize_cursor, set_window_bounds,
+)
 from note_icons import icon
 from palette import ORANGE, SAGE, palette_for
 
 TRANSPARENT = "#ff00fe"
+NOTE_ASSETS = Path(__file__).with_name("assets")
 
 
 class MonitorInfo(ctypes.Structure):
@@ -72,7 +74,7 @@ def distinguishing_folder(path, others):
     return path
 
 
-def layout_tiles(cards, width, scale, *, gap, target, maximum, column_limit):
+def layout_tiles(cards, width, scale, *, gap, target, maximum, column_limit, height=None):
     if width < 2:
         return
     gap = round(gap * scale)
@@ -81,29 +83,54 @@ def layout_tiles(cards, width, scale, *, gap, target, maximum, column_limit):
     side = min(round(maximum * scale), (width - gap * (columns - 1)) // columns)
     for index, card in enumerate(cards):
         row, column = divmod(index, columns)
-        card.configure(width=side, height=side)
+        card.configure(width=side, height=side if height is None else height)
         card.grid(row=row, column=column, padx=(0, gap if column < columns - 1 else 0),
                   pady=(0, gap))
+
+
+def load_note_art(widget, size):
+    try:
+        original = tk.PhotoImage(master=widget, file=NOTE_ASSETS / "orange-notes-pinned.png")
+    except tk.TclError:
+        try:
+            original = tk.PhotoImage(master=widget, file=NOTE_ASSETS / "orange-notes.png")
+        except tk.TclError:
+            return None
+    step = max(1, round(original.width() / size))
+    return original.subsample(step)
 
 
 class FloatingNote(tk.Toplevel):
     def __init__(self, root, restore):
         super().__init__(root)
-        self.palette = palette_for(root)
+        self.notes_palette = self.palette = palette_for(root)
+        self.restore = restore
+        self.press = None
+        self.dragged = False
+        self.alert_timer = None
+        self.pin_highlight = False
         self.withdraw()
         self.overrideredirect(True)
         self.attributes("-topmost", True)
         self.attributes("-alpha", 0.67)
         self.title("打开 Codex 便签")
-        self.attributes("-transparentcolor", TRANSPARENT)
+        if not self.palette.precise_corners:
+            self.attributes("-transparentcolor", TRANSPARENT)
 
-        self.size = round(54 * self.winfo_fpixels("1i") / 96)
+        self.scale = self.winfo_fpixels("1i") / 96
+        self.size = round(54 * self.scale)
+        self.tooltip = None
         self.face = tk.Canvas(self, width=self.size, height=self.size, bg=TRANSPARENT,
                               highlightthickness=0, cursor="hand2", takefocus=True)
         self.face.pack()
+        if self.palette.precise_corners:
+            self.rounded_window = RoundedWindow(self, round(18 * self.scale))
+        self.art = load_note_art(self.face, round(self.size * 0.85)) if self.palette.precise_corners else None
         self.face.bind("<Enter>", lambda _: self.set_hover(True))
         self.face.bind("<Leave>", lambda _: self.set_hover(False))
-        self.face.bind("<ButtonRelease-1>", lambda _: restore())
+        self.face.bind("<ButtonPress-1>", self.begin_drag)
+        self.face.bind("<B1-Motion>", self.drag)
+        self.face.bind("<ButtonRelease-1>", self.end_drag)
         self.face.bind("<Return>", lambda _: restore())
         self.face.bind("<space>", lambda _: restore())
         self.set_hover(False)
@@ -113,25 +140,120 @@ class FloatingNote(tk.Toplevel):
         canvas = self.face
         size = self.size
         canvas.delete("all")
-        rounded_rect(canvas, 2, 2, size - 2, size - 2, size * 0.30,
-                     precise=self.palette.precise_corners,
-                     fill=self.palette.action if hovered else self.palette.floating,
-                     outline=self.palette.hero_border, width=1)
+        fill = self.palette.action if hovered else self.palette.floating
         if self.palette.precise_corners:
+            canvas.configure(bg=fill)
+        else:
+            rounded_rect(canvas, 2, 2, size - 2, size - 2, size * 0.30, fill=fill,
+                         outline=self.palette.hero_border if hovered else fill, width=1)
+        if self.art is not None:
+            canvas.create_image(size / 2, size / 2, image=self.art)
+        elif self.palette.precise_corners:
             mark = icon(canvas, "note", round(size * 0.68), self.palette.ink)
             canvas.create_image(size / 2, size / 2, image=mark)
         else:
             note_mark(canvas, 0, 0, size / 58, "#fffaf5")
+        # The pin in the orange artwork sits near the upper-right of the image.
+        x, y = size * 0.73, size * 0.26
+        if self.art is not None:
+            x = size / 2 + self.art.width() * 0.24
+            y = size / 2 - self.art.height() * 0.32
+        highlight = icon(canvas, "dot", round(13 * self.scale), "#62a4ff")
+        canvas.create_image(round(x), round(y), image=highlight, tags=("unread-indicator",))
+        self.highlight_pin(self.pin_highlight)
+        if (self.palette.precise_corners and hovered and self.press is None
+                and self.winfo_viewable()):
+            self.show_tooltip()
+        elif self.tooltip is not None:
+            self.tooltip.withdraw()
+
+    def highlight_pin(self, visible):
+        self.pin_highlight = visible
+        self.face.itemconfigure("unread-indicator", state="normal" if visible else "hidden")
+
+    def flash_pin(self):
+        self.highlight_pin(not self.pin_highlight)
+        self.alert_timer = self.after(500, self.flash_pin)
+
+    def set_unread_alert(self, enabled):
+        if enabled and self.alert_timer is None:
+            self.flash_pin()
+        elif not enabled and self.alert_timer is not None:
+            self.after_cancel(self.alert_timer)
+            self.alert_timer = None
+            self.highlight_pin(False)
+
+    def destroy(self):
+        self.set_unread_alert(False)
+        super().destroy()
+
+    def show_tooltip(self):
+        if self.tooltip is None:
+            self.tooltip = tk.Toplevel(self)
+            self.tooltip.withdraw()
+            self.tooltip.notes_palette = self.palette
+            self.tooltip.overrideredirect(True)
+            self.tooltip.attributes("-topmost", True)
+            self.tooltip.attributes("-transparentcolor", TRANSPARENT)
+            shell = RoundedSurface(self.tooltip, outside=TRANSPARENT,
+                                   radius=round(15 * self.scale))
+            shell.pack(fill="both", expand=True)
+            label(shell, "打开便签", size=10, weight="bold", bg=self.palette.card).pack(
+                padx=round(12 * self.scale), pady=round(6 * self.scale))
+            self.tooltip.update_idletasks()
+        width, height = self.tooltip.winfo_reqwidth(), self.tooltip.winfo_reqheight()
+        left, top, right, bottom = work_area(self)
+        x0, y0, x1, y1 = screen_box(self)
+        gap = round(8 * self.scale)
+        x = x0 - gap - width if x0 - gap - width >= left else x1 + gap
+        x = min(max(left, x), right - width)
+        y = min(max(top, (y0 + y1 - height) // 2), bottom - height)
+        self.tooltip.geometry(f"{width}x{height}+{x}+{y}")
+        self.tooltip.deiconify()
+        self.tooltip.lift()
 
     def show(self, x, y):
-        self.geometry(f"{self.size}x{self.size}{x:+d}{y:+d}")
+        self.geometry(f"{self.size}x{self.size}+{x}+{y}")
         self.set_hover(False)
         self.deiconify()
         self.lift()
+        self.keep_on_screen()
+
+    def begin_drag(self, event):
+        self.press = event.x_root, event.y_root, self.winfo_rootx(), self.winfo_rooty()
+        self.dragged = False
+        if self.tooltip is not None:
+            self.tooltip.withdraw()
+
+    def drag(self, event):
+        if self.press is None:
+            return
+        start_x, start_y, x, y = self.press
+        dx, dy = event.x_root - start_x, event.y_root - start_y
+        if self.dragged or max(abs(dx), abs(dy)) >= round(4 * self.scale):
+            self.dragged = True
+            self.geometry(f"+{x + dx}+{y + dy}")
+
+    def end_drag(self, event):
+        if self.press is None:
+            return
+        self.press = None
+        if self.dragged:
+            self.keep_on_screen()
+            self.set_hover(within(self.winfo_containing(event.x_root, event.y_root), self))
+        else:
+            self.restore()
+
+    def keep_on_screen(self):
+        self.update_idletasks()
+        left, top, right, bottom = work_area(self)
+        x = min(max(left, self.winfo_rootx()), right - self.size)
+        y = min(max(top, self.winfo_rooty()), bottom - self.size)
+        self.geometry(f"+{x}+{y}")
 
 
 class ScrollPage(tk.Frame):
-    def __init__(self, parent, *, bg=None, padding=(20, 18)):
+    def __init__(self, parent, *, bg=None, padding=(20, 18), bottom_radius=0):
         bg = bg or palette_for(parent).paper
         super().__init__(parent, bg=bg)
         self.canvas = tk.Canvas(self, bg=bg, highlightthickness=0)
@@ -144,8 +266,12 @@ class ScrollPage(tk.Frame):
         self.content = self.canvas.create_window((0, 0), window=self.body, anchor="nw")
         self.body.bind("<Configure>", lambda _: self.canvas.configure(
             scrollregion=self.canvas.bbox("all")))
-        self.canvas.bind("<Configure>", lambda event: self.canvas.itemconfigure(
-            self.content, width=event.width))
+        def size_viewport(event):
+            self.canvas.itemconfigure(self.content, width=event.width)
+            if bottom_radius:
+                round_scroll_bottom(self.canvas, event.width, event.height, padding[0], bottom_radius)
+
+        self.canvas.bind("<Configure>", size_viewport)
         self.winfo_toplevel().bind("<MouseWheel>", self.scroll, add="+")
 
     def scroll(self, event):
@@ -182,31 +308,37 @@ class ProjectPopup(tk.Toplevel):
         self.anchor = anchor
         self.scale = scale
         self.anchor_box = None
+        self.uses_outer_edge = False
         self.content_width = None
         self.links = {}
         self.project_title = group["title"]
         self.project_path = group["subtitle"]
-        self.title_font = tkfont.Font(self, family=FONT, size=12, weight="bold")
-        self.path_font = tkfont.Font(self, family=FONT, size=8)
-        card_title_font = tkfont.Font(self, family=FONT, size=10, weight="bold")
-        shell = RoundedSurface(self, outside=TRANSPARENT, radius=palette.tile_radius,
+        heading_size = 15 if palette.precise_corners else 12
+        self.title_font = tkfont.Font(self, font=ui_font(self, heading_size, "bold"))
+        self.path_font = tkfont.Font(self, font=ui_font(self, 8))
+        card_title_font = tkfont.Font(self, font=ui_font(self, 10, "bold"))
+        shell = RoundedSurface(self, outside=TRANSPARENT, radius=round(17 * scale),
                                border=palette.popup_border)
         shell.pack(fill="both", expand=True)
         self.header = tk.Frame(shell, bg=palette.card)
-        self.header.pack(fill="x", padx=13, pady=(11, 3))
+        self.header.pack(fill="x", padx=round(14 * scale),
+                         pady=(round(12 * scale), round(11 * scale))
+                         if palette.precise_corners else (11, 3))
         title_row = tk.Frame(self.header, bg=palette.card)
         title_row.pack(fill="x")
-        status_color = palette.project_colors[group["status"]][3]
+        status_color = (palette.muted if palette.precise_corners
+                        else palette.project_colors[group["status"]][3])
         self.count = label(title_row, f"{len(group['threads'])} 个会话", size=9,
                            color=status_color, bg=palette.card)
         self.count.pack(side="right", padx=(8, 0))
-        self.title_label = label(title_row, "", weight="bold", size=12, bg=palette.card)
+        self.title_label = label(title_row, "", weight="bold", size=heading_size, bg=palette.card)
         self.title_label.pack(side="left", fill="x", expand=True)
         self.path_label = None
         if self.project_path:
             self.path_label = label(self.header, "", size=8, color=palette.muted, bg=palette.card)
             self.path_label.pack(fill="x", pady=(2, 0))
-        tk.Frame(self.header, bg=palette.line, height=1).pack(fill="x", pady=(7, 0))
+        if not palette.precise_corners:
+            tk.Frame(self.header, bg=palette.line, height=1).pack(fill="x", pady=(7, 0))
         self.update_idletasks()
         self.page = ScrollPage(shell, bg=palette.card, padding=(self.TILE_PADDING, 0))
         self.page.pack(fill="both", expand=True, padx=self.PAGE_INSET, pady=(0, 10))
@@ -222,17 +354,31 @@ class ProjectPopup(tk.Toplevel):
 
     def place_next_to_anchor(self):
         box = screen_box(self.anchor)
-        if box == self.anchor_box:
+        root_left, _, root_right, _ = screen_box(self.master)
+        geometry = box, root_left, root_right
+        if geometry == self.anchor_box:
             return
-        self.anchor_box = box
+        self.anchor_box = geometry
         left, top, right, bottom = work_area(self.anchor)
         x0, y0, x1, y1 = box
         gap = round(8 * self.scale)
         columns = min(3, len(self.links))
-        preferred = round(min(428, 34 + 130 * columns + 8 * (columns - 1)) * self.scale)
+        compact = self.notes_palette.precise_corners
+        tile_size, width_limit = (110, 376) if compact else (130, 428)
+        preferred = round(min(width_limit, 34 + tile_size * columns + 8 * (columns - 1))
+                          * self.scale)
         min_width = min(preferred, round(245 * self.scale))
-        space_left, space_right = x0 - left - gap, right - x1 - gap
-        root_left, _, root_right, _ = screen_box(self.anchor.winfo_toplevel())
+        outer_left = root_left - left - gap
+        outer_right = right - root_right - gap
+        self.uses_outer_edge = (
+            self.notes_palette.precise_corners and max(outer_left, outer_right) >= min_width
+        )
+        if self.uses_outer_edge:
+            near_left, near_right = root_left, root_right
+            space_left, space_right = outer_left, outer_right
+        else:
+            near_left, near_right = x0, x1
+            space_left, space_right = x0 - left - gap, right - x1 - gap
         # Prefer the closest window edge so the popup covers fewer neighboring tiles.
         use_right = x0 + x1 >= root_left + root_right
         if (space_right if use_right else space_left) < min_width:
@@ -241,7 +387,7 @@ class ProjectPopup(tk.Toplevel):
         max_height = min(bottom - top, round(448 * self.scale))
         if side_space >= min_width:
             width = min(preferred, side_space)
-            x = x1 + gap if use_right else x0 - width - gap
+            x = near_right + gap if use_right else near_left - width - gap
         else:
             width = min(preferred, right - left)
             x = min(max(left, x0), right - width)
@@ -260,11 +406,14 @@ class ProjectPopup(tk.Toplevel):
             tile_width = width - self.page.bar.winfo_reqwidth()
             tile_width -= 2 * (self.PAGE_INSET + self.TILE_PADDING)
             layout_tiles(self.links.values(), tile_width, self.scale,
-                         gap=8, target=98, maximum=134, column_limit=columns)
+                         gap=8, target=98, maximum=tile_size + 4, column_limit=columns)
             self.update_idletasks()
-        height = min(max_height, self.header.winfo_reqheight() + self.page.body.winfo_reqheight() + 25)
+        padding = round(34 * self.scale) if compact else 25
+        height = min(max_height, self.header.winfo_reqheight() + self.page.body.winfo_reqheight()
+                     + padding)
         if side_space >= min_width:
-            y = min(max(top, y0), bottom - height)
+            top_offset = round(36 * self.scale) if compact else 0
+            y = min(max(top, y0 - top_offset), bottom - height)
         else:
             y = y1 + gap if down >= up else y0 - height - gap
         self.geometry(f"{width}x{height}+{x}+{y}")
@@ -291,6 +440,8 @@ class StickyWindow:
         self.pending = None
         self.tasks = None
         self.threads = None
+        self.unread_threads = None
+        self.alert_threads = set()
         self.rendered_threads = None
         self.project_cards = {}
         self.popup = None
@@ -299,9 +450,13 @@ class StickyWindow:
         self.pointer_left_at = None
         self.keyboard_popup = False
         self.floating = None
+        self.floating_position = None
+        self.edge_drag = None
+        self.header_drag = None
         self.collapsed = False
         self.task_feedback = tk.StringVar()
         self.thread_feedback = tk.StringVar(value="正在读取本机会话…")
+        self.show_project_counts = True
         self.pinned = tk.BooleanVar(value=False)
         if orange_demo:
             root.title("Codex 便签 · 橙色预览")
@@ -310,7 +465,7 @@ class StickyWindow:
         self.scale = root.winfo_fpixels("1i") / 96
         left, top, right, bottom = work_area(root)
         width = min(round(510 * self.scale), right - left - 55)
-        height = min(round(700 * self.scale), bottom - top - 70)
+        height = min(round((672 if orange_demo else 700) * self.scale), bottom - top - 70)
         x = left + max(20, (right - left - width - round(428 * self.scale)) // 2)
         y = top + (bottom - top - height) // 2
         root.geometry(f"{width}x{height}+{x}+{y}")
@@ -322,6 +477,13 @@ class StickyWindow:
         root.bind("<Escape>", self.escape_project)
         if orange_demo:
             root.bind("<Map>", self.on_map, add="+")
+            self.rounded_window = RoundedWindow(
+                root, round(30 * self.scale), resize_margin=round(6 * self.scale))
+            root.bind("<ButtonPress-1>", self.resize_from_edge, add="+")
+            root.bind("<B1-Motion>", self.drag_window, add="+")
+            root.bind("<ButtonRelease-1>", self.finish_window_drag, add="+")
+            root.bind("<Motion>", lambda event: set_resize_cursor(
+                self.rounded_window.resize_hit(event.x_root, event.y_root)), add="+")
 
         style = ttk.Style(root)
         style.theme_use("clam")
@@ -331,8 +493,13 @@ class StickyWindow:
         style.map("Note.Vertical.TScrollbar", background=[("active", self.palette.scroll_hover)])
 
         self.make_header()
-        self.page = ScrollPage(root)
-        self.page.pack(fill="both", expand=True, padx=(0, 6))
+        padding = (round(13 * self.scale), 0) if orange_demo else (20, 18)
+        frame_inset = round(17 * self.scale) if orange_demo else 0
+        self.page = ScrollPage(root, padding=padding, bottom_radius=frame_inset)
+        # Keep the curved bottom edge outside the scroll viewport.
+        self.page.pack(fill="both", expand=True, padx=(0, 6), pady=(0, frame_inset))
+        if orange_demo:
+            tk.Frame(self.page.body, height=frame_inset, bg=paper).pack(fill="x")
         self.make_tasks(self.page.body)
         self.make_threads(self.page.body)
         self.refresh_tasks()
@@ -341,15 +508,13 @@ class StickyWindow:
 
     def make_header(self):
         palette = self.palette
-        hero = RoundedSurface(self.root, fill=palette.hero, radius=26 if self.orange_demo else 20,
-                              border=palette.hero_border)
-        hero.pack(fill="x", padx=(20, 20), pady=(14, 0))
         if self.orange_demo:
-            window_icon = icon(self.root, "note", 32, palette.accent)
-            self.root.iconphoto(True, window_icon)
-            self.make_orange_masthead(hero)
+            self.root.iconphoto(True, icon(self.root, "note", 32, palette.accent))
+            self.make_orange_masthead()
             return
 
+        hero = RoundedSurface(self.root, fill=palette.hero, radius=20, border=palette.hero_border)
+        hero.pack(fill="x", padx=(20, 20), pady=(14, 0))
         window_icon = tk.PhotoImage(master=self.root, width=24, height=24)
         for color, bounds in (
             (palette.action, (2, 2, 22, 22)), (palette.card, (7, 5, 17, 19)),
@@ -374,90 +539,193 @@ class StickyWindow:
 
     def make_header_controls(self, parent, *, side):
         palette = self.palette
-        self.collapse_button = PillButton(parent, "收起", self.collapse, outside=palette.hero)
-        self.collapse_button.pack(side=side, padx=(5, 0) if side == "right" else (0, 8))
+        if side == "left":
+            self.collapse_button = text_button(
+                parent, "收起", self.collapse, bg=palette.hero, fg=palette.ink, padx=3)
+            self.collapse_button.configure(font=ui_font(parent, 11))
+        else:
+            self.collapse_button = PillButton(parent, "收起", self.collapse, outside=palette.hero)
+            self.collapse_button.pack(side=side, padx=(5, 0))
         self.pin_control = tk.Checkbutton(
             parent, text="置顶", variable=self.pinned, command=self.toggle_pin,
-            font=(FONT, 9), bg=palette.hero, fg=palette.ink, activebackground=palette.hero,
+            font=ui_font(parent, 11 if side == "left" else 9),
+            bg=palette.hero, fg=palette.ink, activebackground=palette.hero,
             activeforeground=palette.ink, selectcolor=palette.card, cursor="hand2", padx=0,
             highlightthickness=1, highlightbackground=palette.hero, highlightcolor=palette.accent,
         )
         if self.orange_demo:
             rounded_indicator(self.pin_control, self.scale, on_hero=True)
         self.pin_control.pack(side=side)
+        if side == "left":
+            tk.Frame(parent, bg=palette.hero_border, width=1, height=16).pack(
+                side="left", padx=8)
+            self.collapse_button.pack(side="left")
 
-    def make_orange_masthead(self, hero):
+    def make_orange_masthead(self):
         palette = self.palette
+        hero = tk.Frame(self.root, bg=palette.hero)
+        hero.pack(fill="x")
         top = tk.Frame(hero, bg=palette.hero)
-        top.pack(fill="x", padx=15, pady=8)
-        title_block = tk.Frame(top, bg=palette.hero)
-        title_block.pack(side="left", padx=(6, 0))
-        title = label(title_block, "Codex 便签", size=22, weight="bold", bg=palette.hero)
-        title.pack(anchor="w")
-        controls = tk.Frame(title_block, bg=palette.hero)
-        controls.pack(anchor="w", pady=(9, 0))
+        top.pack(fill="x", padx=round(24 * self.scale), pady=round(5 * self.scale))
+        top.columnconfigure(2, weight=1)
+        title = label(top, "Codex 便签", size=24, weight="bold", bg=palette.hero)
+        controls = tk.Frame(top, bg=palette.hero)
         self.make_header_controls(controls, side="left")
-        close_button = PillButton(controls, "关闭", self.close, outside=palette.hero)
-        close_button.control.configure(
-            image=icon(close_button, "close", round(18 * self.scale), palette.ink))
-        close_button.pack(side="left", padx=(9, 0))
+        tk.Frame(controls, bg=palette.hero_border, width=1, height=16).pack(
+            side="left", padx=8)
+        close_image = icon(controls, "close", round(16 * self.scale), palette.ink)
+        close_button = text_button(
+            controls, "关闭", self.close, bg=palette.hero, fg=palette.ink,
+            hover_bg=palette.hero_border, image=close_image,
+            padx=round(6 * self.scale), pady=round(6 * self.scale))
+        close_button.bind("<Return>", lambda _: close_button.invoke())
+        close_button.pack(side="left")
 
-        size = round(124 * self.scale)
+        size = round(64 * self.scale)
         art = tk.Canvas(top, width=size + 12, height=size, bg=palette.hero, highlightthickness=0)
-        art.pack(side="right")
-        art.create_oval(8, 3, size + 8, size - 3, fill="#ffb749", outline="")
-        art.create_oval(16, 10, size, size - 10, fill="#ffbd5e", outline="")
-        path = Path(__file__).with_name("assets") / "orange-notes.png"
-        try:
-            photo = tk.PhotoImage(master=art, file=path)
-        except tk.TclError:
+        art.create_oval(9, 4, size + 3, size - 4, fill="#fa9628", outline="")
+        self.hero_image = load_note_art(art, size)
+        if self.hero_image is None:
             note_mark(art, 0, 0, size / 58, palette.ink)
         else:
-            step = max(1, math.ceil(photo.width() / size))
-            self.hero_image = photo.subsample(step)
             art.create_image((size + 12) // 2, size // 2, image=self.hero_image)
-        for area in (hero.canvas, top, title_block, title, art):
+
+        gap = round(21 * self.scale)
+        stacked = False
+        title.grid(row=0, column=0, sticky="w")
+        controls.grid(row=0, column=1, sticky="w", padx=(gap, 0))
+        art.grid(row=0, column=2, sticky="e")
+
+        def arrange_masthead(event):
+            nonlocal stacked
+            single_row_width = sum(widget.winfo_reqwidth() for widget in (title, controls, art))
+            narrow = event.width < single_row_width + gap
+            if narrow == stacked:
+                return
+            stacked = narrow
+            title.grid_configure(columnspan=2 if stacked else 1)
+            controls.grid_configure(row=1 if stacked else 0, column=0 if stacked else 1,
+                                    columnspan=2 if stacked else 1,
+                                    padx=(0 if stacked else gap, 0))
+            art.grid_configure(rowspan=2 if stacked else 1)
+
+        top.bind("<Configure>", arrange_masthead)
+        for area in (hero, top, title, controls, art):
             area.configure(cursor="fleur")
             area.bind("<ButtonPress-1>", self.drag_header)
 
     def on_map(self, event):
         if event.widget is self.root:
-            hide_caption(self.root)
+            hide_window_frame(self.root)
 
     def drag_header(self, event):
-        self.dismiss_project()
-        start_window_move(self.root, event.x_root, event.y_root)
+        if not self.resize_from_edge(event):
+            self.dismiss_project()
+            self.header_drag = (event.x_root, event.y_root, self.root.winfo_rootx(),
+                                self.root.winfo_rooty())
+        return "break"
+
+    def resize_from_edge(self, event):
+        hit = self.rounded_window.resize_hit(event.x_root, event.y_root)
+        if hit and self.rounded_window.shape is not None:
+            self.dismiss_project()
+            _, (left, top, _, _) = self.rounded_window.shape
+            self.edge_drag = (hit, event.x_root, event.y_root,
+                              self.root.winfo_rootx() - left, self.root.winfo_rooty() - top,
+                              self.root.winfo_width(), self.root.winfo_height())
+            return "break"
+
+    def drag_window(self, event):
+        if self.header_drag is not None:
+            start_x, start_y, x, y = self.header_drag
+            set_window_bounds(self.root, x + event.x_root - start_x, y + event.y_root - start_y,
+                              self.root.winfo_width(), self.root.winfo_height())
+            return "break"
+        if self.edge_drag is None:
+            return
+        hit, start_x, start_y, x, y, width, height = self.edge_drag
+        dx, dy = event.x_root - start_x, event.y_root - start_y
+        min_width, min_height = self.root.minsize()
+        if hit in (10, 13, 16):
+            new_width = max(min_width, width - dx)
+            x += width - new_width
+            width = new_width
+        elif hit in (11, 14, 17):
+            width = max(min_width, width + dx)
+        if hit in (12, 13, 14):
+            new_height = max(min_height, height - dy)
+            y += height - new_height
+            height = new_height
+        elif hit in (15, 16, 17):
+            height = max(min_height, height + dy)
+        set_window_bounds(self.root, x, y, width, height)
+        return "break"
+
+    def finish_window_drag(self, _):
+        self.header_drag = None
+        self.edge_drag = None
+
+    def make_content_panel(self, parent, *, pady=0):
+        palette = self.palette
+        if self.orange_demo:
+            shell = RoundedSurface(parent, radius=round(17 * self.scale))
+            shell.pack(fill="x", pady=pady)
+            panel = tk.Frame(shell, bg=palette.card)
+            panel.pack(fill="x", padx=round(14 * self.scale), pady=round(12 * self.scale))
+        else:
+            panel = tk.Frame(parent, bg=palette.paper)
+            panel.pack(fill="x", pady=pady)
+        return panel
 
     def make_tasks(self, parent):
         palette = self.palette
-        panel_bg = palette.card if self.orange_demo else palette.paper
-        if self.orange_demo:
-            shell = RoundedSurface(parent, radius=23)
-            shell.pack(fill="x")
-            task_panel = tk.Frame(shell, bg=panel_bg)
-            task_panel.pack(fill="x", padx=14, pady=12)
-        else:
-            task_panel = tk.Frame(parent, bg=panel_bg)
-            task_panel.pack(fill="x")
+        task_panel = self.make_content_panel(parent)
+        panel_bg = task_panel["bg"]
         heading = tk.Frame(task_panel, bg=panel_bg)
-        heading.pack(fill="x", pady=(0, 9))
-        label(heading, "待办", size=14, weight="bold", bg=panel_bg).pack(side="left")
-        self.count = label(heading, "", color=palette.muted, size=9, bg=panel_bg)
-        self.count.pack(side="right")
+        heading.pack(fill="x", pady=(0, round(14 * self.scale) if self.orange_demo else 9))
+        label(heading, "待办", size=16 if self.orange_demo else 14, weight="bold",
+              bg=panel_bg).pack(side="left")
+        self.count = label(heading, "", color=palette.muted,
+                           size=11 if self.orange_demo else 9, bg=panel_bg)
+        if self.orange_demo:
+            tk.Frame(heading, bg=palette.line, width=1, height=16).pack(side="left", padx=9)
+            self.count.pack(side="left")
+        else:
+            self.count.pack(side="right")
 
         entry_row = tk.Frame(task_panel, bg=panel_bg)
         entry_row.pack(fill="x", pady=(0, 8))
-        add_button = PillButton(entry_row, "添加待办", self.add_task, primary=True, outside=panel_bg)
-        add_button.pack(side="right", padx=(8, 0))
-        entry_shell = RoundedSurface(entry_row, outside=panel_bg, fill=palette.field, radius=14)
+        caption = "添加" if self.orange_demo else "添加待办"
+        add_button = PillButton(entry_row, caption, self.add_task, primary=True, outside=panel_bg,
+                                radius=round(10 * self.scale) if self.orange_demo else 20,
+                                antialias=self.orange_demo)
+        if self.orange_demo:
+            add_button.control.configure(font=ui_font(entry_row, 11, "bold"))
+            add_button.control.pack_configure(padx=round(21 * self.scale),
+                                              pady=round(8 * self.scale))
+        add_button.pack(side="right", padx=(round(9 * self.scale), 0))
+        entry_border = palette.hero_border if self.orange_demo else palette.line
+        entry_shell = RoundedSurface(entry_row, outside=panel_bg, fill=palette.field,
+                                     radius=round(9 * self.scale) if self.orange_demo else 14,
+                                     border=entry_border, antialias=self.orange_demo)
         entry_shell.pack(side="left", fill="both", expand=True)
-        self.entry = tk.Entry(entry_shell, font=(FONT, 10), bg=palette.field, fg=palette.ink,
+        entry_size = 11 if self.orange_demo else 10
+        self.entry = tk.Entry(entry_shell, font=ui_font(entry_shell, entry_size),
+                              bg=palette.field, fg=palette.ink,
                               relief="flat", bd=0, highlightthickness=0,
                               insertbackground=palette.ink)
-        self.entry.pack(fill="both", expand=True, padx=12, pady=5)
+        self.entry.pack(fill="both", expand=True, padx=round(13 * self.scale),
+                        pady=round(8 * self.scale) if self.orange_demo else 5)
         self.entry.bind("<Return>", lambda _: self.add_task())
         self.entry.bind("<FocusIn>", lambda _: entry_shell.set_border(palette.accent))
-        self.entry.bind("<FocusOut>", lambda _: entry_shell.set_border(palette.line))
+        self.entry.bind("<FocusOut>", lambda _: entry_shell.set_border(entry_border))
+        if self.orange_demo:
+            self.entry_hint = label(entry_shell, "记一条待办", size=11, color=palette.muted,
+                                    bg=palette.field, padx=0)
+            self.entry_hint.bind("<Button-1>", lambda _: self.entry.focus_set())
+            self.entry.bind("<FocusIn>", lambda _: self.entry_hint.place_forget(), add="+")
+            self.entry.bind("<FocusOut>", lambda _: self.show_entry_hint(), add="+")
+            self.show_entry_hint()
         self.task_list = tk.Frame(task_panel, bg=panel_bg)
         self.task_list.pack(fill="x")
         feedback = label(task_panel, "", textvariable=self.task_feedback,
@@ -466,23 +734,38 @@ class StickyWindow:
                                      if self.task_feedback.get() else feedback.pack_forget())
         wrap(feedback)
 
+    def show_entry_hint(self):
+        if not self.entry.get():
+            self.entry_hint.place(x=round(13 * self.scale), rely=0.5, anchor="w")
+
     def make_threads(self, parent):
         palette = self.palette
-        thread_panel = tk.Frame(parent, bg=palette.paper)
-        thread_panel.pack(fill="x", pady=(13, 0))
+        self.show_project_counts = not self.orange_demo
+        thread_panel = self.make_content_panel(parent, pady=(round(15 * self.scale), 0))
+        panel_bg = thread_panel["bg"]
         if not self.orange_demo:
             tk.Frame(thread_panel, height=1, bg=palette.line).pack(fill="x", pady=(0, 12))
-        heading = tk.Frame(thread_panel, bg=palette.paper)
-        heading.pack(fill="x", pady=(0, 5))
-        label(heading, "项目会话", size=14, weight="bold").pack(side="left")
-        PillButton(heading, "刷新", self.refresh_threads).pack(side="right")
+        heading = tk.Frame(thread_panel, bg=panel_bg)
+        heading.pack(fill="x", pady=(0, round(12 * self.scale) if self.orange_demo else 5))
+        label(heading, "项目会话", size=16 if self.orange_demo else 14, weight="bold",
+              bg=panel_bg).pack(side="left")
+        if self.orange_demo:
+            refresh = icon(heading, "refresh", round(18 * self.scale), palette.muted)
+            text_button(heading, " 刷新", self.refresh_threads, bg=panel_bg, fg=palette.muted,
+                        image=refresh, compound="left").pack(side="right")
+        else:
+            PillButton(heading, "刷新", self.refresh_threads).pack(side="right")
         summary = label(thread_panel, "", textvariable=self.thread_feedback,
-                        color=palette.muted, size=9)
+                        color=palette.muted, size=9, bg=panel_bg)
         summary.pack(fill="x", pady=(0, 10))
         wrap(summary)
-        self.thread_list = tk.Frame(thread_panel, bg=palette.paper)
+        self.thread_list = tk.Frame(thread_panel, bg=panel_bg)
         self.thread_list.pack(fill="x")
         self.thread_list.bind("<Configure>", lambda event: self.layout_project_cards(event.width))
+        if self.orange_demo:
+            self.thread_feedback.trace_add("write", lambda *_: summary.pack(
+                fill="x", pady=(0, 10), before=self.thread_list) if self.thread_feedback.get()
+                else summary.pack_forget())
 
     def close(self):
         self.dismiss_project()
@@ -500,19 +783,23 @@ class StickyWindow:
         if self.collapsed:
             return
         self.dismiss_project()
+        left, top, right, bottom = work_area(self.root)
         self.floating = FloatingNote(self.root, self.restore)
         self.collapsed = True
         self.root.withdraw()
-        width = self.root.winfo_vrootwidth()
-        height = self.root.winfo_vrootheight()
         size = self.floating.size
-        self.floating.show(max(0, width - size - 23), min(140, max(0, height - size - 20)))
+        position = self.floating_position or (
+            max(left, right - size - 23), min(top + 140, max(top, bottom - size - 20))
+        )
+        self.floating.show(*position)
 
     def restore(self):
         if not self.collapsed:
             return
+        self.floating_position = self.floating.winfo_rootx(), self.floating.winfo_rooty()
         self.floating.destroy()
         self.floating = None
+        self.alert_threads.clear()
         self.collapsed = False
         self.root.deiconify()
         self.root.lift()
@@ -542,28 +829,40 @@ class StickyWindow:
 
     def show_task(self, task):
         palette = self.palette
-        surface = RoundedSurface(self.task_list, outside=self.task_list["bg"], radius=13)
-        surface.pack(fill="x", pady=(0, 5))
+        if self.orange_demo:
+            if self.task_list.winfo_children():
+                tk.Frame(self.task_list, bg=palette.line, height=1).pack(fill="x")
+            surface = tk.Frame(self.task_list, bg=palette.card)
+            surface.pack(fill="x")
+        else:
+            surface = RoundedSurface(self.task_list, radius=13)
+            surface.pack(fill="x", pady=(0, 5))
         row = tk.Frame(surface, bg=palette.card)
-        row.pack(fill="x", padx=9, pady=4)
+        row.pack(fill="x", padx=0 if self.orange_demo else 9,
+                 pady=round(9 * self.scale) if self.orange_demo else 4)
         value = tk.BooleanVar(row, value=task["done"])
         checkbox = tk.Checkbutton(
             row, text=task["text"], variable=value,
             command=lambda: self.change_task(task, done=value.get()),
-            font=(FONT, 10, "overstrike" if task["done"] else "normal"),
+            font=ui_font(row, 11 if self.orange_demo else 10,
+                         "overstrike" if task["done"] else "normal"),
             bg=palette.card, fg=palette.muted if task["done"] else palette.ink,
             activebackground=palette.card, selectcolor=palette.field, anchor="w", justify="left",
             wraplength=235, cursor="hand2",
             highlightthickness=1, highlightbackground=palette.card, highlightcolor=palette.accent)
         checkbox.value = value
+        text_gap = round(5 * self.scale) if self.orange_demo else 0
         if self.orange_demo:
-            rounded_indicator(checkbox, self.scale)
+            rounded_indicator(checkbox, self.scale, text_gap=text_gap)
         text_button(row, "删除", lambda: self.remove_task(task), bg=palette.card, fg=palette.muted,
                     padx=4).pack(side="right")
-        text_button(row, "编辑", lambda: self.edit_task(task), bg=palette.card, padx=4).pack(
-            side="right")
+        if self.orange_demo:
+            tk.Frame(row, bg=palette.line, width=1, height=14).pack(side="right", padx=4)
+        text_button(row, "编辑", lambda: self.edit_task(task), bg=palette.card,
+                    fg=palette.muted if self.orange_demo else palette.accent, padx=4).pack(
+                        side="right")
         checkbox.pack(side="left", fill="x", expand=True)
-        wrap(checkbox, 27)
+        wrap(checkbox, 27 + text_gap)
 
     def task_action(self, operation, *args, **kwargs):
         try:
@@ -574,7 +873,7 @@ class StickyWindow:
         except (OSError, sqlite3.Error):
             self.task_feedback.set("保存失败，请重试。")
             return False
-        self.task_feedback.set("已保存到本机")
+        self.task_feedback.set("" if self.orange_demo else "已保存到本机")
         self.refresh_tasks()
         return True
 
@@ -620,13 +919,28 @@ class StickyWindow:
             self.thread_feedback.set("会话读取失败，可点刷新重试。"
                                      if self.threads is None else "刷新失败，以下是上次读取结果。")
             return
+        self.update_unread_alert(threads)
         self.threads = threads
         if threads == self.rendered_threads:
             self.show_thread_summary()
         elif self.popup is None:
             self.render_projects()
 
+    def update_unread_alert(self, threads):
+        # A missing read-state snapshot makes every session's unread state unknown.
+        if threads and all(thread["unread_completed"] is None for thread in threads):
+            return
+        unread = {thread["id"] for thread in threads if thread["unread_completed"] is True}
+        if self.floating is not None and self.unread_threads is not None:
+            self.alert_threads.intersection_update(unread)
+            self.alert_threads.update(unread - self.unread_threads)
+            self.floating.set_unread_alert(bool(self.alert_threads))
+        self.unread_threads = unread
+
     def show_thread_summary(self):
+        if not self.show_project_counts:
+            self.thread_feedback.set("")
+            return
         count = f"{len(self.project_cards)} 个项目 · {len(self.rendered_threads)} 个会话"
         self.thread_feedback.set(f"{count} · 悬停项目查看" if self.rendered_threads else count)
 
@@ -638,8 +952,8 @@ class StickyWindow:
             child.destroy()
         self.project_cards.clear()
         if not self.threads:
-            label(self.thread_list, "没有找到本机会话", color=self.palette.muted, pady=8).grid(
-                sticky="w")
+            label(self.thread_list, "没有找到本机会话", color=self.palette.muted,
+                  bg=self.thread_list["bg"], pady=8).grid(sticky="w")
         groups = group_threads(self.threads)
         paths = defaultdict(list)
         for group in groups:
@@ -669,8 +983,13 @@ class StickyWindow:
         self.project_cards[group["key"]] = card
 
     def layout_project_cards(self, width):
-        layout_tiles(self.project_cards.values(), width, self.scale,
-                     gap=11, target=104, maximum=145, column_limit=6)
+        cards = self.project_cards.values()
+        if not cards:
+            return
+        height = next(iter(cards)).compact_height() if self.orange_demo else None
+        layout_tiles(cards, width, self.scale, height=height,
+                     gap=9 if self.orange_demo else 11,
+                     target=98 if self.orange_demo else 104, maximum=145, column_limit=6)
 
     def schedule_project_hover(self, card, group):
         if self.pending_hover is not None:
@@ -680,7 +999,11 @@ class StickyWindow:
             self.pending_hover = None
             self.open_project_under_pointer(card, group)
 
-        self.pending_hover = self.root.after(95, show)
+        crossing_popup_gap = (
+            self.popup is not None and self.popup.uses_outer_edge
+            and self.popup.bridges(*self.root.winfo_pointerxy())
+        )
+        self.pending_hover = self.root.after(290 if crossing_popup_gap else 95, show)
 
     def open_project_under_pointer(self, card, group):
         pointed = self.root.winfo_containing(*self.root.winfo_pointerxy())

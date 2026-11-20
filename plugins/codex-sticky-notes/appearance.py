@@ -6,39 +6,44 @@ from datetime import datetime
 from tkinter import font as tkfont
 
 from data import STATUS_LABELS
-from note_icons import icon
+from note_icons import icon, rounded_surface_image
 from palette import palette_for
 
 FONT = "Microsoft YaHei UI"
 
 
+def ui_font(widget, size, weight="normal"):
+    return FONT, size + palette_for(widget).font_delta, weight
+
+
 def label(parent, text, *, size=10, color=None, bg=None, weight="normal", **kwargs):
     palette = palette_for(parent)
-    return tk.Label(parent, text=text, font=(FONT, size, weight), fg=color or palette.ink,
+    return tk.Label(parent, text=text, font=ui_font(parent, size, weight), fg=color or palette.ink,
                     bg=bg or palette.paper, anchor="w", justify="left", **kwargs)
 
 
-def text_button(parent, text, command, *, bg=None, fg=None, **kwargs):
+def text_button(parent, text, command, *, bg=None, fg=None, hover_bg=None, **kwargs):
     palette = palette_for(parent)
     bg, fg = bg or palette.paper, fg or palette.accent
-    control = tk.Button(parent, text=text, command=command, font=(FONT, 10), bg=bg, fg=fg,
-                        activebackground=palette.hover, activeforeground=fg, relief="flat", bd=0,
+    hover_bg = hover_bg or palette.hover
+    control = tk.Button(parent, text=text, command=command, font=ui_font(parent, 10), bg=bg, fg=fg,
+                        activebackground=hover_bg, activeforeground=fg, relief="flat", bd=0,
                         highlightthickness=1, highlightbackground=bg, highlightcolor=palette.accent,
                         cursor="hand2", **kwargs)
-    control.bind("<Enter>", lambda _: control.configure(bg=palette.hover))
+    control.bind("<Enter>", lambda _: control.configure(bg=hover_bg))
     control.bind("<Leave>", lambda _: control.configure(bg=bg))
     return control
 
 
-def rounded_indicator(control, scale, *, on_hero=False):
+def rounded_indicator(control, scale, *, on_hero=False, text_gap=0):
     palette = palette_for(control)
-    size = round(22 * scale)
-    outline = palette.ink if on_hero else "#966747"
+    size = round(17 * scale)
+    outline = palette.ink if on_hero else palette.muted
     fill = palette.ink if on_hero else palette.action
-    mark = palette.card if on_hero else palette.ink
+    mark = palette.card
     control.configure(
-        indicatoron=False, image=icon(control, "ring", size, outline),
-        selectimage=icon(control, "circle", size, fill, checkmark=mark),
+        indicatoron=False, image=icon(control, "ring", size, outline, text_gap=text_gap),
+        selectimage=icon(control, "circle", size, fill, checkmark=mark, text_gap=text_gap),
         compound="left", selectcolor=control["bg"], relief="flat", offrelief="flat",
         overrelief="flat", bd=0,
     )
@@ -114,7 +119,8 @@ def paint_hills(canvas):
 
 
 class RoundedSurface(tk.Frame):
-    def __init__(self, parent, *, outside=None, fill=None, radius=14, border=None):
+    def __init__(self, parent, *, outside=None, fill=None, radius=14, border=None,
+                 antialias=False):
         palette = palette_for(parent)
         outside = outside or palette.paper
         super().__init__(parent, bg=outside)
@@ -122,6 +128,8 @@ class RoundedSurface(tk.Frame):
         self.radius = radius
         self.border = border or palette.line
         self.precise_corners = palette.precise_corners
+        self.antialias = antialias
+        self.surface_image = None
         self.canvas = tk.Canvas(self, bg=outside, highlightthickness=0, bd=0)
         self.canvas.place(x=0, y=0, relwidth=1, relheight=1)
         self.canvas.bind("<Configure>", lambda _: self.paint())
@@ -133,21 +141,27 @@ class RoundedSurface(tk.Frame):
     def paint(self):
         self.canvas.delete("all")
         width, height = self.canvas.winfo_width(), self.canvas.winfo_height()
-        if min(width, height) > 2:
+        if self.antialias and min(width, height) > 3:
+            self.surface_image = rounded_surface_image(
+                self.canvas, width - 2, height - 2, self.radius, self.fill, self.border)
+            self.canvas.create_image(1, 1, image=self.surface_image, anchor="nw")
+        elif min(width, height) > 2:
             rounded_rect(self.canvas, 1, 1, width - 2, height - 2,
                          min(self.radius, (width - 2) / 2, (height - 2) / 2),
                          precise=self.precise_corners, fill=self.fill, outline=self.border)
 
 
 class PillButton(RoundedSurface):
-    def __init__(self, parent, text, command, *, outside=None, primary=False):
+    def __init__(self, parent, text, command, *, outside=None, primary=False, radius=20,
+                 antialias=False):
         palette = palette_for(parent)
         self.normal = palette.action if primary else palette.card
         self.hover = palette.action_hover if primary else palette.hover
         border = self.normal if primary else palette.line
-        super().__init__(parent, outside=outside, fill=self.normal, radius=20, border=border)
+        super().__init__(parent, outside=outside, fill=self.normal, radius=radius, border=border,
+                         antialias=antialias)
         ink = palette.action_ink if primary else palette.accent
-        self.control = tk.Button(self, text=text, command=command, font=(FONT, 9, "bold"),
+        self.control = tk.Button(self, text=text, command=command, font=ui_font(self, 9, "bold"),
                                  bg=self.normal, fg=ink, activebackground=self.hover,
                                  activeforeground=ink, relief="flat", bd=0,
                                  highlightthickness=0, cursor="hand2")
@@ -202,7 +216,7 @@ def two_line_text(text, font, width):
 class ProjectCard(tk.Canvas):
     def __init__(self, parent, title, hint, status, caption, scale):
         self.palette = palette_for(parent)
-        super().__init__(parent, bg=self.palette.paper, bd=0, highlightthickness=0, width=1, height=1,
+        super().__init__(parent, bg=parent["bg"], bd=0, highlightthickness=0, width=1, height=1,
                          cursor="hand2", takefocus=True)
         self.title = title
         self.hint = hint
@@ -211,8 +225,10 @@ class ProjectCard(tk.Canvas):
         self.scale = scale
         self.selected = False
         self.focused = False
-        self.title_font = tkfont.Font(self, family=FONT, size=10, weight="bold")
-        self.small_font = tkfont.Font(self, family=FONT, size=8)
+        self.title_font = tkfont.Font(self, font=ui_font(self, 10, "bold"))
+        self.small_font = tkfont.Font(self, font=ui_font(self, 8))
+        self.title_top = round((32 if self.palette.precise_corners else 36) * scale)
+        self.badge_height = self.small_font.metrics("linespace") + round(4 * scale)
         self.bind("<Configure>", lambda _: self.paint())
         self.bind("<FocusIn>", lambda _: self.set_focus(True))
         self.bind("<FocusOut>", lambda _: self.set_focus(False))
@@ -225,40 +241,59 @@ class ProjectCard(tk.Canvas):
         self.selected = active
         self.paint()
 
+    def compact_height(self):
+        return (self.title_top + 2 * self.title_font.metrics("linespace")
+                + self.badge_height + round(14 * self.scale))
+
     def paint(self):
         self.delete("all")
-        side = self.winfo_width()
-        if side <= 2:
+        width, height = self.winfo_width(), self.winfo_height()
+        if min(width, height) <= 2:
             return
         palette = self.palette
         paper, hover, border, ink = palette.project_colors[self.status]
+        surface = hover if self.selected else paper
         pad = round(13 * self.scale)
-        title_top = round(36 * self.scale)
         radius = round(palette.tile_radius * self.scale)
-        rounded_rect(self, 1, 1, side - 2, side - 2, radius,
+        rounded_rect(self, 1, 1, width - 2, height - 2, radius,
                      precise=palette.precise_corners,
-                     fill=hover if self.selected else paper,
+                     fill=surface,
                      outline=ink if self.focused or self.selected else border)
-        x, y, s = pad, round(14 * self.scale), self.scale
+        x, y, s = pad, round(12 * self.scale), self.scale
         if palette.precise_corners:
-            folder = icon(self, "folder", round(25 * s), ink)
+            folder = icon(self, "folder", round(25 * s), palette.ink)
             self.create_image(x - round(2 * s), y - round(4 * s), anchor="nw", image=folder)
         else:
             self.create_line(x, y + 13 * s, x, y + 2 * s, x + 6 * s, y + 2 * s,
                              x + 9 * s, y + 5 * s, x + 20 * s, y + 5 * s, x + 20 * s, y + 15 * s,
                              x, y + 15 * s, x, y + 13 * s, fill=ink, width=1.4 * s,
                              joinstyle="round", capstyle="round")
-        width = side - 2 * pad
+        text_width = width - 2 * pad
         if self.hint:
-            hint_width = width - round(27 * s)
-            self.create_text(side - pad, y + round(9 * s),
+            hint_width = text_width - round(27 * s)
+            self.create_text(width - pad, y + round(9 * s),
                              text=shorten(self.hint, self.small_font, hint_width),
                              anchor="e", font=self.small_font, fill=palette.muted)
-        name = two_line_text(self.title, self.title_font, width)
-        self.create_text(pad, title_top, text=name, anchor="nw", font=self.title_font, fill=palette.ink)
-        bottom = side - round(17 * s)
-        status_dot(self, pad, bottom, s, ink, smooth=palette.precise_corners)
-        self.create_text(pad + round(12 * s), bottom, text=self.caption, anchor="w",
+        name = two_line_text(self.title, self.title_font, text_width)
+        self.create_text(pad, self.title_top, text=name, anchor="nw", font=self.title_font,
+                         fill=palette.ink, tags=("project-title",))
+        badge_bottom = (round(8 * s) + self.badge_height / 2
+                        if palette.precise_corners else round(18 * s))
+        self.paint_status_badge(pad, height - badge_bottom, surface, border, ink)
+
+    def paint_status_badge(self, left, center, fill, border, ink):
+        s = self.scale
+        text_offset = round(18 * s)
+        padding = text_offset + round(7 * s)
+        available = self.winfo_width() - 2 * left - padding
+        caption = shorten(self.caption, self.small_font, available)
+        right = left + padding + self.small_font.measure(caption)
+        radius = self.badge_height / 2
+        rounded_rect(self, left, center - radius, right, center + radius, radius,
+                     precise=True, fill=fill, outline=border, tags=("status-badge",))
+        status_dot(self, left + round(6 * s), center, s, ink,
+                   smooth=self.palette.precise_corners)
+        self.create_text(left + text_offset, center, text=caption, anchor="w",
                          font=self.small_font, fill=ink)
 
 
@@ -278,6 +313,8 @@ class SessionCard(tk.Canvas):
             self.fill, self.hover_fill, self.border, self.status_ink = palette.project_colors["unread"]
         elif status == "running":
             self.fill, self.hover_fill, self.border, self.status_ink = palette.project_colors["running"]
+        elif palette.precise_corners and status in {"stale", "unknown"}:
+            self.fill, self.hover_fill, self.border, self.status_ink = palette.project_colors["unknown"]
         self.scale = scale
         self.title_font = title_font
         self.detail_font = detail_font
@@ -322,21 +359,23 @@ class SessionCard(tk.Canvas):
                      precise=palette.precise_corners,
                      fill=self.hover_fill if self.hovered else self.fill,
                      outline=palette.accent if self.hovered or self.focused else self.border)
-        status_y = round(16 * s)
+        title_top = round((14 if palette.precise_corners else 29) * s)
+        name = two_line_text(self.title, self.title_font, width)
+        title_end = title_top + (name.count("\n") + 1) * self.title_font.metrics("linespace")
+        status_y = title_end + round(9 * s) if palette.precise_corners else round(16 * s)
         status_dot(self, pad, status_y, s, self.status_ink, smooth=palette.precise_corners)
         self.create_text(pad + round(10 * s), status_y, anchor="w", font=self.detail_font,
                          text=self.caption, fill=self.status_ink)
 
-        title_top = round(29 * s)
-        name = two_line_text(self.title, self.title_font, width)
         self.create_text(pad, title_top, text=name, anchor="nw", font=self.title_font, fill=palette.ink)
-        bottom = side - round(9 * s)
+        bottom = side - round((13 if palette.precise_corners else 9) * s)
         self.create_text(pad, bottom, text=self.when, anchor="sw", font=self.detail_font,
                          fill=palette.muted)
 
+        if palette.precise_corners:
+            return
         detail_line = self.detail_font.metrics("linespace")
-        detail_top = title_top + (name.count("\n") + 1) * self.title_font.metrics("linespace")
-        detail_top += round(3 * s)
+        detail_top = title_end + round(3 * s)
         lines = (bottom - detail_line - round(3 * s) - detail_top) // detail_line
         if self.progress and lines > 0:
             excerpt = self.progress if len(self.progress) <= 112 else self.progress[:112] + "…"

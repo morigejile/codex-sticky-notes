@@ -24,6 +24,7 @@ class Palette:
     scroll_hover: str = "#899b82"
     tile_radius: int = 17
     precise_corners: bool = False
+    font_delta: int = 0
     status_colors: dict[str, str] = dataclass_field(default_factory=lambda: {
         "running": "#805921", "stale": "#855b37", "completed": "#425f47",
         "interrupted": "#855b37", "failed": "#92555a",
@@ -40,21 +41,21 @@ class Palette:
 SAGE = Palette()
 ORANGE = replace(
     SAGE,
-    paper="#ffe8d8", card="#ffffff", field="#fff9f3", ink="#1c1b42", muted="#625c71",
-    line="#efddcf", hover="#fff0df", accent="#a64a08",
-    action="#ffa82a", action_hover="#f69618", action_ink="#1c1b42",
-    hero="#ffa82a", hero_border="#f6a12a", popup_border="#eac9b2",
-    floating="#ffb348", scroll="#e9b791", scroll_hover="#cd8753", tile_radius=22,
-    precise_corners=True,
+    paper="#feede4", card="#fefbf9", field="#fefafa", ink="#17173b", muted="#60637c",
+    line="#ecdacf", hover="#fff0df", accent="#a64a08",
+    action="#ff941f", action_hover="#f28917", action_ink="#17173b",
+    hero="#ffa12f", hero_border="#e4943c", popup_border="#e3cfc5",
+    floating="#ffc48e", scroll="#ddc9bd", scroll_hover="#bd9e8a", tile_radius=12,
+    precise_corners=True, font_delta=-1,
     status_colors={
         "running": "#99530b", "stale": "#805422", "completed": "#42634f",
         "interrupted": "#805422", "failed": "#983f48",
     },
     project_colors={
-        "unread": ("#edf7ed", "#e2f2e4", "#c9e0cf", "#35634a"),
-        "running": ("#fff1d6", "#ffe8bc", "#edd19c", "#8b4a07"),
-        "read": ("#fff1ef", "#ffe6e0", "#efd1cb", "#8d424b"),
-        "unknown": ("#f7f5fb", "#f0ecf7", "#e1dbeb", "#5f576e"),
+        "unread": ("#e3f8ea", "#d9f3e3", "#b2dbbf", "#35634a"),
+        "running": ("#fdf1d7", "#ffebc2", "#edd19c", "#8b4a07"),
+        "read": ("#fce3e4", "#f9dce2", "#edc1c8", "#8d424b"),
+        "unknown": ("#ebebf6", "#e4e4f2", "#d2d4e8", "#5f576e"),
     },
 )
 

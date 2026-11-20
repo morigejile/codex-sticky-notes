@@ -5,14 +5,17 @@ import sys
 import tempfile
 import time
 import tkinter as tk
+from ctypes import c_int, wintypes
+from tkinter import font as tkfont
 from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "plugins" / "codex-sticky-notes"))
+from appearance import PillButton
 from data import TaskStore
-from native_frame import WS_CAPTION, window_style
+from native_frame import WS_CAPTION, gdi32, set_window_bounds, user32, window_style
 from palette import ORANGE, SAGE
-from window import StickyWindow
+from window import StickyWindow, screen_box, work_area
 
 
 def until(root, predicate):
@@ -38,6 +41,23 @@ def pause(root, seconds):
         time.sleep(0.015)
 
 
+def check_scroll_corners(canvas, inset):
+    user32.GetWindowRgn.argtypes = (wintypes.HWND, wintypes.HANDLE)
+    user32.GetWindowRgn.restype = c_int
+    gdi32.PtInRegion.argtypes = (wintypes.HANDLE, c_int, c_int)
+    gdi32.PtInRegion.restype = wintypes.BOOL
+    region = gdi32.CreateRectRgn(0, 0, 0, 0)
+    try:
+        assert user32.GetWindowRgn(canvas.winfo_id(), region) != 0
+        width, height = canvas.winfo_width(), canvas.winfo_height()
+        assert gdi32.PtInRegion(region, inset + 1, 1)
+        assert gdi32.PtInRegion(region, width // 2, height - 2)
+        assert not gdi32.PtInRegion(region, inset + 1, height - 2)
+        assert not gdi32.PtInRegion(region, width - inset - 2, height - 2)
+    finally:
+        gdi32.DeleteObject(region)
+
+
 def check_window(store, *, orange_demo=False):
     now = int(time.time() * 1000)
     threads = [
@@ -55,6 +75,9 @@ def check_window(store, *, orange_demo=False):
         dict(id="read", title="归纳资料", updated=now - 60, progress="",
              status="completed", unread_completed=False, unread=False,
              project_key="read", project="资料", project_path="D:/Read"),
+        dict(id="unknown", title="核对进度", updated=now - 75, progress="",
+             status="stale", unread_completed=False, unread=None,
+             project_key="unknown", project="进度", project_path="D:/Unknown"),
     ]
     older_ids = [f"older-{index}" for index in range(12)]
     threads.extend(dict(threads[0], id=thread_id, title=f"较早的会话 {index + 1}",
@@ -73,21 +96,65 @@ def check_window(store, *, orange_demo=False):
         widget.event_generate("<Enter>", x=widget.winfo_width() // 2,
                               y=widget.winfo_height() // 2)
 
+    def resize(width, height):
+        if orange_demo:
+            x, y, _, _ = screen_box(root)
+            set_window_bounds(root, x, y, width, height)
+        else:
+            root.geometry(f"{width}x{height}")
+
     try:
         until(root, lambda: window.threads is not None and window.thread_list.winfo_ismapped())
         palette = ORANGE if orange_demo else SAGE
         assert root["bg"] == palette.paper
         if orange_demo:
             assert not window_style(root) & WS_CAPTION
+            assert window.rounded_window.shape is not None
+            _, bounds = window.rounded_window.shape
+            assert bounds[:2] == (0, 0)
+            old_x, old_y, _, _ = screen_box(root)
+            masthead = root.winfo_children()[0]
+            masthead.event_generate("<ButtonPress-1>", x=200, y=40)
+            masthead.event_generate("<B1-Motion>", x=227, y=51)
+            masthead.event_generate("<ButtonRelease-1>", x=227, y=51)
+            until(root, lambda: root.winfo_rootx() == old_x + 27)
+            assert root.winfo_rooty() == old_y + 11
+            set_window_bounds(root, old_x, old_y, root.winfo_width(), root.winfo_height())
+            until(root, lambda: screen_box(root)[:2] == (old_x, old_y))
             assert window.hero_image.width() > 0
+            top = masthead.winfo_children()[0]
+            title = next((child for child in top.winfo_children() if isinstance(child, tk.Label)), None)
+            assert title is not None
+            art = next(child for child in top.winfo_children() if isinstance(child, tk.Canvas))
+            close_button = next(child for child in window.pin_control.master.winfo_children()
+                                if isinstance(child, tk.Button) and child["text"] == "关闭")
+            assert close_button["bg"] == ORANGE.hero
+            assert title.winfo_rootx() < window.pin_control.winfo_rootx() < art.winfo_rootx()
+            assert abs(center(title)[1] - center(window.pin_control)[1]) <= 1
             assert not int(window.pin_control["indicatoron"])
             assert window.pin_control["image"] and window.pin_control["selectimage"]
+            assert window.pin_control.winfo_rootx() < window.collapse_button.winfo_rootx()
+            assert window.thread_list["bg"] == ORANGE.card
+            assert window.entry_hint.winfo_ismapped() and not window.entry.get()
+            assert window.entry.master.winfo_height() >= round(35 * window.scale)
+            entry_shell = window.entry.master
+            add_button = next(child for child in entry_shell.master.winfo_children()
+                              if isinstance(child, PillButton))
+            for surface in (entry_shell, add_button):
+                background, = surface.canvas.find_all()
+                assert surface.canvas.type(background) == "image"
+                assert surface.surface_image.transparency_get(0, 0)
+            assert tkfont.Font(root, font=window.entry["font"]).cget("size") == 10
+            assert not window.thread_feedback.get()
         assert window.task_list.winfo_ismapped()
         assert window.task_list.winfo_rooty() < window.thread_list.winfo_rooty()
         window.entry.insert(0, "复核本周测试结果")
         window.add_task()
         assert len(store.list()) == 1
         task_surface = window.task_list.winfo_children()[0]
+        if orange_demo:
+            root.update_idletasks()
+            assert task_surface.winfo_height() >= round(41 * window.scale)
         task_row = next(child for child in task_surface.winfo_children()
                         if isinstance(child, tk.Frame))
         checkbox = next(child for child in task_row.winfo_children()
@@ -95,23 +162,69 @@ def check_window(store, *, orange_demo=False):
         if orange_demo:
             assert not int(checkbox["indicatoron"])
             assert checkbox["image"] and checkbox["selectimage"]
+            indicator_width = int(root.tk.call("image", "width", checkbox["image"]))
+            assert int(root.tk.call("image", "height", checkbox["image"])) == round(17 * window.scale)
+            assert indicator_width == int(root.tk.call(
+                "image", "width", window.pin_control["image"])) + round(5 * window.scale)
         checkbox.invoke()
         assert store.list()[0]["done"]
 
-        assert list(window.project_cards) == ["one", "two", "read"]
-        one, two, read = window.project_cards.values()
-        assert len({card.status for card in (one, two, read)}) == 3
+        assert list(window.project_cards) == ["one", "two", "read", "unknown"]
+        one, two, read, unknown = window.project_cards.values()
+        assert len({card.status for card in (one, two, read, unknown)}) == 4
+        for card in window.project_cards.values():
+            badge, = card.find_withtag("status-badge")
+            paper, _, border, _ = palette.project_colors[card.status]
+            assert card.itemcget(badge, "fill") == paper
+            assert card.itemcget(badge, "outline") == border
         assert one.winfo_rootx() < two.winfo_rootx() < read.winfo_rootx()
         assert one.winfo_rooty() == two.winfo_rooty() == read.winfo_rooty()
-        assert one.winfo_width() == one.winfo_height()
         if orange_demo:
+            assert unknown.winfo_rooty() == one.winfo_rooty()
+        if orange_demo:
+            assert one.winfo_height() < one.winfo_width()
+            title_item, = two.find_withtag("project-title")
+            badge_item, = two.find_withtag("status-badge")
+            gap = two.bbox(badge_item)[1] - two.bbox(title_item)[3]
+            assert 0 < gap <= round(10 * window.scale)
             assert sum(one.type(item) == "image" for item in one.find_all()) == 2
-        original = root.geometry().split("+", 1)[0]
-        root.geometry(f"{root.minsize()[0]}x{root.winfo_height()}")
+            assert one.title_font.cget("size") == 9 and one.small_font.cget("size") == 7
+            width = root.winfo_width()
+            middle = root.winfo_height() // 2
+            root.event_generate("<ButtonPress-1>", x=width - 2, y=middle)
+            root.event_generate("<B1-Motion>", x=width + 30, y=middle)
+            root.event_generate("<ButtonRelease-1>", x=width + 30, y=middle)
+            until(root, lambda: root.winfo_width() > width)
+            resize(width, root.winfo_height())
+            until(root, lambda: abs(root.winfo_width() - width) <= 3)
+        else:
+            assert one.winfo_width() == one.winfo_height()
+        original_width, original_height = root.winfo_width(), root.winfo_height()
+        resize(root.minsize()[0], original_height)
         until(root, lambda: read.winfo_rooty() > one.winfo_rooty())
         assert read.winfo_rootx() == one.winfo_rootx()
-        root.geometry(original)
+        if orange_demo:
+            assert title.winfo_ismapped() and close_button.winfo_ismapped() and art.winfo_ismapped()
+            assert screen_box(close_button)[2] < screen_box(art)[0]
+        resize(original_width, original_height)
         until(root, lambda: read.winfo_rooty() == one.winfo_rooty())
+        if orange_demo:
+            assert abs(center(title)[1] - center(window.pin_control)[1]) <= 1
+            canvas = window.page.canvas
+            bottom_inset = round(17 * window.scale)
+            resize(original_width, root.minsize()[1])
+            until(root, lambda: canvas.yview()[1] < 1)
+            assert screen_box(root)[3] - screen_box(canvas)[3] == bottom_inset
+            canvas.yview_moveto((1 - canvas.yview()[1]) / 2)
+            until(root, lambda: 0 < canvas.yview()[0] < canvas.yview()[1] < 1)
+            check_scroll_corners(canvas, round(13 * window.scale))
+            canvas.yview_moveto(1)
+            until(root, lambda: canvas.yview()[1] == 1)
+            assert screen_box(root)[3] - screen_box(canvas)[3] == bottom_inset
+            assert screen_box(unknown)[3] <= screen_box(canvas)[3]
+            resize(original_width, original_height)
+            canvas.yview_moveto(0)
+            root.update()
         point_at(window.entry)
         until(root, lambda: window.popup is None)
         point_at(one)
@@ -129,6 +242,12 @@ def check_window(store, *, orange_demo=False):
         assert first.winfo_rootx() < second.winfo_rootx()
         assert (popup.winfo_rootx() >= one.winfo_rootx() + one.winfo_width()
                 or popup.winfo_rootx() + popup.winfo_width() <= one.winfo_rootx())
+        if orange_demo:
+            left, _, right, _ = work_area(one)
+            root_left, _, root_right, _ = screen_box(root)
+            if max(root_left - left, right - root_right) >= round(253 * window.scale):
+                popup_left, _, popup_right, _ = screen_box(popup)
+                assert popup_right <= root_left or popup_left >= root_right
         if popup.winfo_rootx() >= one.winfo_rootx() + one.winfo_width():
             gap_x = (one.winfo_rootx() + one.winfo_width() + popup.winfo_rootx()) // 2
         else:
@@ -148,7 +267,7 @@ def check_window(store, *, orange_demo=False):
         assert window.popup is popup
         point_at(window.entry)
         until(root, lambda: window.popup is None)
-        one, two, read = window.project_cards.values()
+        one, two, read, _ = window.project_cards.values()
         assert one.status == two.status != read.status
 
         point_at(two)
@@ -166,19 +285,66 @@ def check_window(store, *, orange_demo=False):
         until(root, lambda: window.floating is not None and window.floating.winfo_viewable())
         assert root.state() == "withdrawn"
         face = window.floating.face
+
+        def indicator_state():
+            return face.itemcget("unread-indicator", "state")
+
+        assert indicator_state() == "hidden"
+
+        # A different session becomes unread while the overall count stays the same.
+        threads = [
+            dict(thread, unread=False, unread_completed=False) if thread["id"] == "one"
+            else dict(thread, status="completed", unread=True, unread_completed=True)
+            if thread["id"] == "running" else thread
+            for thread in threads
+        ]
+        window.refresh_threads()
+        until(root, lambda: indicator_state() == "normal")
+        until(root, lambda: indicator_state() == "hidden")
+        until(root, lambda: indicator_state() == "normal")
+        threads = [dict(thread, unread=False, unread_completed=False)
+                   if thread["id"] == "running" else thread for thread in threads]
+        window.refresh_threads()
+        until(root, lambda: window.pending is None)
+        assert indicator_state() == "hidden"
+
         face.event_generate("<Leave>")
         idle_alpha = float(window.floating.attributes("-alpha"))
         face.event_generate("<Enter>")
         assert 0 < idle_alpha < float(window.floating.attributes("-alpha")) < 1
+        if orange_demo:
+            until(root, lambda: window.floating.tooltip.winfo_viewable())
+            assert window.floating.rounded_window.shape is not None
+            assert window.floating.art.width() > 0
+            face.event_generate("<Leave>")
+            until(root, lambda: not window.floating.tooltip.winfo_viewable())
+        x0, y0, _, _ = screen_box(window.floating)
+        face.event_generate("<ButtonPress-1>", x=20, y=20)
+        face.event_generate("<B1-Motion>", x=-24, y=35)
+        face.event_generate("<ButtonRelease-1>", x=20, y=20)
+        until(root, lambda: window.floating is not None
+              and window.floating.winfo_rootx() < x0 - 20)
+        moved = screen_box(window.floating)[:2]
+        assert moved[1] > y0
+        face.event_generate("<ButtonPress-1>", x=20, y=20)
         face.event_generate("<ButtonRelease-1>", x=20, y=20)
         until(root, lambda: root.state() == "normal" and window.floating is None)
 
         root.iconify()
         until(root, lambda: window.floating is not None and window.floating.winfo_viewable())
+        assert screen_box(window.floating)[:2] == moved
+        face = window.floating.face
+        threads = [dict(thread, unread=True, unread_completed=True)
+                   if thread["id"] == "running" else thread for thread in threads]
+        window.refresh_threads()
+        until(root, lambda: indicator_state() == "normal")
+        alert_timer = window.floating.alert_timer
         window.restore()
         until(root, lambda: root.state() == "normal" and window.floating is None)
+        assert alert_timer not in root.tk.splitlist(root.tk.call("after", "info"))
         if orange_demo:
             assert not window_style(root) & WS_CAPTION
+            assert window.rounded_window.shape is not None
     finally:
         pointer.stop()
         window.close()
