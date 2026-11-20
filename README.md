@@ -16,7 +16,7 @@ Codex 便签把本地待办、项目最近活动和待查看会话放在一页�
 
 ## 开始使用
 
-需要 Windows 和带 Tkinter 的 Python 3.11 或更新版本，并确保可以从命令行调用 `pythonw.exe`。
+需要 Windows 和带 Tkinter 的 Python 3.11 或更新版本，并确保可以从命令行调用 `python.exe`。启动脚本在打开便签后会自行退出。
 
 双击 **Open-Codex-Sticky-Notes.cmd** 打开橙色主窗口。再次双击会唤回已运行的便签。旧的 **Open-Codex-Sticky-Notes-Orange-Demo.cmd** 快捷入口也会打开同一个窗口。
 

@@ -1,7 +1,6 @@
 """Codex tools for the Windows sticky notes."""
 
 import sqlite3
-import subprocess
 import sys
 from pathlib import Path
 from typing import Annotated, Any
@@ -13,6 +12,7 @@ from mcp.types import ToolAnnotations
 from pydantic import Field
 
 from data import STATUS_LABELS, TaskStore, read_threads
+from launch import start_gui
 
 server = FastMCP("Codex 便签")
 store = TaskStore()
@@ -73,11 +73,12 @@ def open_sticky_notes() -> dict[str, str]:
     """打开 Windows 上的 Codex 便签小窗。"""
     if sys.platform != "win32":
         raise ToolError("便签小窗需要在 Windows 本机打开。")
-    pythonw = Path(sys.executable).with_name("pythonw.exe")
-    if not pythonw.is_file():
-        raise ToolError("找不到用于打开小窗的 pythonw.exe。")
-    subprocess.Popen([str(pythonw), "-B", str(Path(__file__).with_name("window.py"))],
-                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        start_gui(Path(__file__).with_name("window.py"))
+    except FileNotFoundError as error:
+        raise ToolError("找不到用于打开小窗的 pythonw.exe。") from error
+    except OSError as error:
+        raise ToolError("Windows 无法启动便签窗口。") from error
     return {"message": "已发出打开便签窗口的请求。"}
 
 

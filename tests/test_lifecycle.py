@@ -1,4 +1,6 @@
+import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -34,6 +36,22 @@ class LifecycleTests(unittest.TestCase):
         sender.signal()
         self.assertTrue(receiver.wait())
         self.assertFalse(receiver.wait())
+
+    def test_window_launch_uses_base_pythonw_from_a_virtual_environment(self):
+        from launch import start_gui
+
+        with tempfile.TemporaryDirectory() as folder:
+            base = Path(folder) / "Python 安装"
+            base.mkdir()
+            pythonw = base / "pythonw.exe"
+            pythonw.touch()
+            shim = Path(folder) / "venv" / "Scripts" / "pythonw.exe"
+            script = Path(folder) / "便签" / "window.py"
+            with (patch.object(sys, "base_prefix", str(base)),
+                  patch.object(sys, "executable", str(shim)), patch("launch.subprocess.Popen") as popen):
+                start_gui(script, "--background")
+                self.assertEqual(popen.call_args.args[0], [str(pythonw), "-B", str(script), "--background"])
+                self.assertEqual(popen.call_args.kwargs["creationflags"], subprocess.CREATE_NO_WINDOW)
 
     def test_main_launchers_use_the_same_orange_instance(self):
         for args in ([], ["--background"], ["--orange-demo"]):

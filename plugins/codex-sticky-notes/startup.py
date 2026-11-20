@@ -3,11 +3,12 @@
 import argparse
 import logging
 import subprocess
-import sys
+import time
 import winreg
 from pathlib import Path
 
 from data import APP_HOME
+from launch import gui_command, start_gui
 from lifecycle import Event, Instance, codex_processes
 
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
@@ -23,27 +24,39 @@ def enabled():
         return False
 
 
+def stop_watcher():
+    event = Event("watcher-stop")
+    try:
+        event.signal()
+    finally:
+        event.close()
+
+
 def set_enabled(value):
     if value:
-        pythonw = Path(sys.executable).with_name("pythonw.exe")
-        if not pythonw.is_file():
-            raise FileNotFoundError("找不到 pythonw.exe。")
-        command = subprocess.list2cmdline([str(pythonw), "-B", str(Path(__file__).resolve()), "watch"])
+        script = Path(__file__).resolve()
+        command = subprocess.list2cmdline(gui_command(script, "watch"))
         with winreg.CreateKey(winreg.HKEY_CURRENT_USER, RUN_KEY) as key:
+            try:
+                previous_command, _ = winreg.QueryValueEx(key, RUN_NAME)
+            except FileNotFoundError:
+                previous_command = ""
             winreg.SetValueEx(key, RUN_NAME, 0, winreg.REG_SZ, command)
-        subprocess.Popen([str(pythonw), "-B", str(Path(__file__).resolve()), "watch"],
-                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if previous_command != command and Instance.running("watcher"):
+            stop_watcher()
+            deadline = time.monotonic() + 5
+            while Instance.running("watcher"):
+                if time.monotonic() >= deadline:
+                    raise OSError("旧版便签监控未能退出。")
+                time.sleep(0.05)
+        start_gui(script, "watch")
     else:
         with winreg.CreateKey(winreg.HKEY_CURRENT_USER, RUN_KEY) as key:
             try:
                 winreg.DeleteValue(key, RUN_NAME)
             except FileNotFoundError:
                 pass
-        event = Event("watcher-stop")
-        try:
-            event.signal()
-        finally:
-            event.close()
+        stop_watcher()
 
 
 class LaunchState:
@@ -72,10 +85,7 @@ def watch():
             should_launch = state.needs_launch(current, Instance.running("window"))
             if should_launch and (child is None or child.poll() is not None):
                 try:
-                    child = subprocess.Popen(
-                        [str(Path(sys.executable).with_name("pythonw.exe")), "-B",
-                         str(Path(__file__).with_name("window.py")), "--background"],
-                        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    child = start_gui(Path(__file__).with_name("window.py"), "--background")
                 except OSError:
                     logging.exception("Unable to start sticky notes")
             if stop.wait(3000):
