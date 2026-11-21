@@ -1,6 +1,7 @@
-"""Colors and rounded controls for the Windows notes."""
+"""Colors and rounded controls for sticky notes."""
 
 import math
+import sys
 import tkinter as tk
 from datetime import datetime
 from tkinter import font as tkfont
@@ -9,7 +10,7 @@ from data import STATUS_LABELS, is_finished_and_read
 from note_icons import corner_images, icon
 from palette import palette_for
 
-FONT = "Microsoft YaHei UI"
+FONT = "PingFang SC" if sys.platform == "darwin" else "Microsoft YaHei UI"
 
 
 def ui_font(widget, size, weight="normal"):

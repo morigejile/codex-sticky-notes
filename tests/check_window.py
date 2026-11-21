@@ -381,7 +381,7 @@ def check_window(store, *, preview=False, project_color_demo=None):
         popup = window.popup
         link = popup.links["two"]
         assert link.winfo_rooty() + link.winfo_height() <= popup.winfo_rooty() + popup.winfo_height()
-        with patch("window.os.startfile") as startfile:
+        with patch("launch.os.startfile") as startfile:
             link.event_generate("<ButtonRelease-1>", x=12, y=12)
             startfile.assert_called_once_with("codex://threads/two")
         assert window.popup is None

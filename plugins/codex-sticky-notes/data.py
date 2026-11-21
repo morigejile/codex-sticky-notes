@@ -3,7 +3,9 @@
 import json
 import ntpath
 import os
+import posixpath
 import sqlite3
+import sys
 import time
 from collections import Counter
 from contextlib import closing
@@ -11,7 +13,10 @@ from pathlib import Path
 from uuid import uuid4
 
 CODEX_HOME = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
-APP_HOME = Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "CodexStickyNotes"
+if sys.platform == "darwin":
+    APP_HOME = Path.home() / "Library" / "Application Support" / "CodexStickyNotes"
+else:
+    APP_HOME = Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "CodexStickyNotes"
 STATUS_LABELS = {
     "running": "有新活动",
     "stale": "状态待确认",
@@ -200,11 +205,24 @@ def _projects(db, desktop):
         if legacy_id not in aliases and isinstance(name, str) and isinstance(roots, list):
             projects.setdefault(legacy_id, (name, [path for path in roots if isinstance(path, str)]))
     workspaces = sorted(
-        ((ntpath.normcase(ntpath.normpath(root)), key) for key, (_, roots) in projects.items()
+        ((normalized_project_path(root), key) for key, (_, roots) in projects.items()
          for root in roots if root),
         key=lambda match: -len(match[0]),
     )
     return projects, aliases, workspaces
+
+
+def project_path_module(path):
+    if path.startswith("/") and not path.startswith("//"):
+        return posixpath
+    if ntpath.splitdrive(path)[0] or "\\" in path:
+        return ntpath
+    return posixpath if sys.platform == "darwin" else ntpath
+
+
+def normalized_project_path(path):
+    path_module = project_path_module(path)
+    return path_module.normcase(path_module.normpath(path))
 
 
 def _thread_project(row, desktop, projects, aliases, workspaces):
@@ -219,15 +237,17 @@ def _thread_project(row, desktop, projects, aliases, workspaces):
         if isinstance(project_id, str):
             project_id = aliases.get(project_id, project_id)
     directory = row["cwd"] or ""
-    cwd = ntpath.normcase(ntpath.normpath(directory)) if directory else ""
+    path_module = project_path_module(directory)
+    cwd = normalized_project_path(directory) if directory else ""
+    sep = path_module.sep
     if project_id not in projects and cwd:
         project_id = next((key for path, key in workspaces
-                           if cwd == path or cwd.startswith(path.rstrip("\\") + "\\")), None)
+                           if cwd == path or cwd.startswith(path.rstrip(sep) + sep)), None)
     if project_id in projects:
         name, roots = projects[project_id]
         return f"project:{project_id}", name, roots[0] if roots else ""
     if cwd:
-        return f"cwd:{cwd}", ntpath.basename(ntpath.normpath(directory)) or directory, directory
+        return f"cwd:{cwd}", path_module.basename(path_module.normpath(directory)) or directory, directory
     return "unassigned", "未分组", ""
 
 

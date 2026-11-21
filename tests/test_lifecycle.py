@@ -7,12 +7,21 @@ from unittest.mock import patch
 from uuid import uuid4
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "plugins" / "codex-sticky-notes"))
-from lifecycle import Event, Instance
-from startup import LaunchState
+WINDOWS = sys.platform == "win32"
+if WINDOWS:
+    from lifecycle import Event, Instance
+    from startup import LaunchState
+else:
+    from mac_lifecycle import Event, Instance
 import window
 
 
 class LifecycleTests(unittest.TestCase):
+    def setUp(self):
+        if not WINDOWS:
+            folder = self.enterContext(tempfile.TemporaryDirectory())
+            self.enterContext(patch("mac_lifecycle.APP_HOME", Path(folder)))
+
     def test_duplicate_instance_and_release(self):
         name = "test-" + uuid4().hex
         first = Instance(name)
@@ -20,9 +29,11 @@ class LifecycleTests(unittest.TestCase):
         self.assertTrue(first.primary)
         second = Instance(name)
         self.assertFalse(second.primary)
-        self.assertTrue(Instance.running(name))
+        if WINDOWS:
+            self.assertTrue(Instance.running(name))
         first.close()
-        self.assertFalse(Instance.running(name))
+        if WINDOWS:
+            self.assertFalse(Instance.running(name))
         third = Instance(name)
         self.addCleanup(third.close)
         self.assertTrue(third.primary)
@@ -37,6 +48,7 @@ class LifecycleTests(unittest.TestCase):
         self.assertTrue(receiver.wait())
         self.assertFalse(receiver.wait())
 
+    @unittest.skipUnless(WINDOWS, "Windows launcher")
     def test_window_launch_uses_base_pythonw_from_a_virtual_environment(self):
         from launch import start_gui
 
@@ -53,6 +65,7 @@ class LifecycleTests(unittest.TestCase):
                 self.assertEqual(popen.call_args.args[0], [str(pythonw), "-B", str(script), "--background"])
                 self.assertEqual(popen.call_args.kwargs["creationflags"], subprocess.CREATE_NO_WINDOW)
 
+    @unittest.skipUnless(WINDOWS, "Windows window entry points")
     def test_main_launchers_use_the_same_orange_instance(self):
         for args in ([], ["--background"], ["--orange-demo"]):
             with (self.subTest(args=args), patch.object(sys, "argv", ["window.py", *args]),
@@ -68,6 +81,7 @@ class LifecycleTests(unittest.TestCase):
                 if args == ["--background"]:
                     tk.return_value.after_idle.assert_called_once_with(notes.return_value.collapse)
 
+    @unittest.skipUnless(WINDOWS, "Windows autostart")
     def test_start_retry_close_and_next_codex_launch(self):
         state = LaunchState()
         first = {(123, 456)}

@@ -1,6 +1,9 @@
 """Load the decorative note artwork at the window's pixel size."""
 
 import ctypes
+import subprocess
+import sys
+import tempfile
 import tkinter as tk
 from ctypes import wintypes
 from functools import lru_cache
@@ -44,6 +47,12 @@ def _encode_png(bgra, width, height):
 
 @lru_cache(maxsize=8)
 def _resized_png(path, width):
+    if sys.platform == "darwin":
+        with tempfile.TemporaryDirectory() as folder:
+            output = Path(folder) / "note.png"
+            subprocess.run(["/usr/bin/sips", "-Z", str(width), str(path), "--out", str(output)],
+                           check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return output.read_bytes()
     gdiplus = ctypes.WinDLL("gdiplus")
     startup = _StartupInput(version=1, suppress_external_codecs=True)
     token = ctypes.c_size_t()
@@ -83,6 +92,6 @@ def load_note_art(widget, size):
         try:
             png = _resized_png(NOTE_ASSETS / name, size)
             return tk.PhotoImage(master=widget, data=png, format="png")
-        except (OSError, tk.TclError):
+        except (OSError, subprocess.CalledProcessError, tk.TclError):
             continue
     return None

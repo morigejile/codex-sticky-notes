@@ -1,8 +1,7 @@
-"""Single-page Windows sticky notes."""
+"""Single-page Codex sticky notes."""
 
 import argparse
 import ctypes
-import os
 import sqlite3
 import sys
 import time
@@ -10,25 +9,29 @@ import tkinter as tk
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from ctypes import wintypes
-from pathlib import PureWindowsPath
+from pathlib import PurePosixPath, PureWindowsPath
 from tkinter import messagebox, simpledialog, ttk
 from tkinter import font as tkfont
-from urllib.parse import quote
 
 from appearance import (
     PillButton, ProjectCard, RoundedSurface, SessionCard, capsule_switch, label, note_mark, paint_hills,
     paint_smooth_rect, rounded_indicator, rounded_rect, text_button, two_line_text, ui_font, wrap,
 )
-from data import TaskStore, group_threads, read_project_threads
-from lifecycle import Event, Instance
-from native_frame import (
-    RoundedWindow, hide_window_frame, round_scroll_bottom, set_resize_cursor, set_window_bounds,
-)
+from data import TaskStore, group_threads, project_path_module, read_project_threads
+from launch import open_thread_link
 from note_art import load_note_art
 from note_icons import icon
 from palette import ORANGE, ORANGE_MAIN, PROJECT_COLOR_DEMOS, SAGE, palette_for
 
-TRANSPARENT = "#ff00fe"
+WINDOWS = sys.platform == "win32"
+MACOS = sys.platform == "darwin"
+if WINDOWS:
+    from lifecycle import Event, Instance
+    from native_frame import (
+        RoundedWindow, hide_window_frame, round_scroll_bottom, set_resize_cursor, set_window_bounds,
+    )
+else:
+    from mac_lifecycle import Event, Instance
 
 
 class MonitorInfo(ctypes.Structure):
@@ -37,6 +40,8 @@ class MonitorInfo(ctypes.Structure):
 
 
 def work_area(widget):
+    if not WINDOWS:
+        return 0, 24, widget.winfo_screenwidth(), widget.winfo_screenheight() - 48
     user32 = ctypes.windll.user32
     user32.MonitorFromWindow.argtypes = (wintypes.HWND, wintypes.DWORD)
     user32.MonitorFromWindow.restype = wintypes.HANDLE
@@ -64,14 +69,27 @@ def within(widget, parent):
 
 
 def distinguishing_folder(path, others):
-    parts = PureWindowsPath(path).parts
-    peers = [tuple(part.casefold() for part in PureWindowsPath(other).parts)
+    path_module = project_path_module(path)
+    path_type = PureWindowsPath if path_module.sep == "\\" else PurePosixPath
+    parts = path_type(path).parts
+    peers = [path_type(path_module.normcase(other)).parts
              for other in others if other != path]
+    normalized = path_type(path_module.normcase(path)).parts
     for length in range(1, len(parts) + 1):
-        suffix = tuple(part.casefold() for part in parts[-length:])
-        if all(peer[-length:] != suffix for peer in peers):
-            return str(PureWindowsPath(*parts[-length:]))
+        if all(peer[-length:] != normalized[-length:] for peer in peers):
+            return str(path_type(*parts[-length:]))
     return path
+
+
+def popup_background(widget, fallback):
+    if WINDOWS:
+        transparent = "#ff00fe"
+        widget.attributes("-transparentcolor", transparent)
+        return transparent
+    if MACOS:
+        widget.attributes("-transparent", True)
+        return "systemTransparent"
+    return fallback
 
 
 def layout_tiles(cards, width, scale, *, gap, target, maximum, column_limit, height=None):
@@ -102,16 +120,18 @@ class FloatingNote(tk.Toplevel):
         self.attributes("-topmost", True)
         self.attributes("-alpha", 0.67)
         self.title("打开 Codex 便签")
-        if not self.palette.precise_corners:
-            self.attributes("-transparentcolor", TRANSPARENT)
+        self.native_corners = WINDOWS and self.palette.precise_corners
+        outside = (self.palette.floating if self.native_corners
+                   else popup_background(self, self.palette.floating))
+        self.configure(bg=outside)
 
         self.scale = self.winfo_fpixels("1i") / 96
         self.size = round(54 * self.scale)
         self.tooltip = None
-        self.face = tk.Canvas(self, width=self.size, height=self.size, bg=TRANSPARENT,
+        self.face = tk.Canvas(self, width=self.size, height=self.size, bg=outside,
                               highlightthickness=0, cursor="hand2", takefocus=True)
         self.face.pack()
-        if self.palette.precise_corners:
+        if self.native_corners:
             self.rounded_window = RoundedWindow(
                 self, round(18 * self.scale), corner_colors=lambda: (self.face["bg"],) * 2)
         self.art = load_note_art(self.face, round(self.size * 0.85)) if self.palette.precise_corners else None
@@ -130,7 +150,7 @@ class FloatingNote(tk.Toplevel):
         size = self.size
         canvas.delete("all")
         fill = self.palette.action if hovered else self.palette.floating
-        if self.palette.precise_corners:
+        if self.native_corners:
             canvas.configure(bg=fill)
             self.rounded_window.refresh()
         else:
@@ -184,8 +204,9 @@ class FloatingNote(tk.Toplevel):
             self.tooltip.notes_palette = self.palette
             self.tooltip.overrideredirect(True)
             self.tooltip.attributes("-topmost", True)
-            self.tooltip.attributes("-transparentcolor", TRANSPARENT)
-            shell = RoundedSurface(self.tooltip, outside=TRANSPARENT,
+            outside = popup_background(self.tooltip, self.palette.card)
+            self.tooltip.configure(bg=outside)
+            shell = RoundedSurface(self.tooltip, outside=outside,
                                    radius=round(15 * self.scale))
             shell.pack(fill="both", expand=True)
             label(shell, "打开便签", size=10, weight="bold", bg=self.palette.card).pack(
@@ -258,20 +279,36 @@ class ScrollPage(tk.Frame):
             scrollregion=self.canvas.bbox("all")))
         def size_viewport(event):
             self.canvas.itemconfigure(self.content, width=event.width)
-            if bottom_radius:
+            if WINDOWS and bottom_radius:
                 round_scroll_bottom(self.canvas, event.width, event.height, padding[0], bottom_radius)
 
         self.canvas.bind("<Configure>", size_viewport)
         self.wheel_owner = self.winfo_toplevel()
-        self.wheel_binding = self.wheel_owner.bind("<MouseWheel>", self.scroll, add="+")
+        self.wheel_step = 1 if MACOS and tk.TkVersion < 9 else 120
+        self.scroll_bindings = {
+            "<MouseWheel>": self.wheel_owner.bind("<MouseWheel>", self.scroll, add="+"),
+        }
+        if MACOS and tk.TkVersion >= 9:
+            self.scroll_bindings["<TouchpadScroll>"] = self.wheel_owner.bind(
+                "<TouchpadScroll>", self.scroll_touchpad, add="+")
 
     def destroy(self):
-        self.wheel_owner.unbind("<MouseWheel>", self.wheel_binding)
+        for sequence, binding in self.scroll_bindings.items():
+            self.wheel_owner.unbind(sequence, binding)
         super().destroy()
 
     def scroll(self, event):
         if within(event.widget, self):
-            self.canvas.yview_scroll(-int(event.delta / 120), "units")
+            steps = int(event.delta / self.wheel_step)
+            self.canvas.yview_scroll(-steps, "units")
+
+    def scroll_touchpad(self, event):
+        if within(event.widget, self):
+            bounds = self.canvas.bbox(self.content)
+            if bounds and bounds[3] > bounds[1]:
+                _, vertical = self.tk.splitlist(self.tk.call("tk::PreciseScrollDeltas", event.delta))
+                fraction = self.canvas.yview()[0] - int(vertical) / (bounds[3] - bounds[1])
+                self.canvas.yview_moveto(fraction)
 
     def reveal(self, widget):
         bounds = self.canvas.bbox(self.content)
@@ -298,8 +335,8 @@ class ProjectPopup(tk.Toplevel):
         self.withdraw()
         self.overrideredirect(True)
         self.attributes("-topmost", True)
-        self.attributes("-transparentcolor", TRANSPARENT)
-        self.configure(bg=TRANSPARENT)
+        outside = popup_background(self, palette.card)
+        self.configure(bg=outside)
         self.anchor = anchor
         self.scale = scale
         self.anchor_box = None
@@ -312,7 +349,7 @@ class ProjectPopup(tk.Toplevel):
         self.title_font = tkfont.Font(self, font=ui_font(self, heading_size, "bold"))
         self.path_font = tkfont.Font(self, font=ui_font(self, 8))
         card_title_font = tkfont.Font(self, font=ui_font(self, 10, "bold"))
-        shell = RoundedSurface(self, outside=TRANSPARENT, radius=round(17 * scale),
+        shell = RoundedSurface(self, outside=outside, radius=round(17 * scale),
                                border=palette.popup_border)
         shell.pack(fill="both", expand=True)
         self.header = tk.Frame(shell, bg=palette.card)
@@ -481,7 +518,7 @@ class StickyWindow:
         root.protocol("WM_DELETE_WINDOW", self.close)
         root.bind("<Unmap>", self.on_unmap)
         root.bind("<Escape>", self.escape_project)
-        if orange_theme:
+        if WINDOWS and orange_theme:
             root.bind("<Map>", self.on_map, add="+")
             self.rounded_window = RoundedWindow(
                 root, round(30 * self.scale), resize_margin=round(6 * self.scale),
@@ -521,7 +558,8 @@ class StickyWindow:
     def make_header(self):
         palette = self.palette
         if self.orange_theme:
-            self.root.iconphoto(True, icon(self.root, "note", 32, palette.accent))
+            if WINDOWS:
+                self.root.iconphoto(True, icon(self.root, "note", 32, palette.accent))
             self.make_orange_masthead()
             return
 
@@ -533,7 +571,8 @@ class StickyWindow:
             (palette.accent, (9, 9, 15, 10)), (palette.accent, (9, 12, 13, 13)),
         ):
             window_icon.put(color, to=bounds)
-        self.root.iconphoto(True, window_icon)
+        if WINDOWS:
+            self.root.iconphoto(True, window_icon)
         top = tk.Frame(hero, bg=palette.hero)
         top.pack(fill="x", padx=14, pady=12)
         size = round(46 * self.scale)
@@ -583,15 +622,16 @@ class StickyWindow:
         title = label(top, "Codex 便签", size=24, weight="bold", bg=palette.hero)
         controls = tk.Frame(top, bg=palette.hero)
         self.make_header_controls(controls, side="left")
-        tk.Frame(controls, bg=palette.hero_border, width=1, height=16).pack(
-            side="left", padx=8)
-        close_image = icon(controls, "close", round(16 * self.scale), palette.ink)
-        close_button = text_button(
-            controls, "关闭", self.close, bg=palette.hero, fg=palette.ink,
-            hover_bg=palette.hero_border, image=close_image,
-            padx=round(6 * self.scale), pady=round(6 * self.scale))
-        close_button.bind("<Return>", lambda _: close_button.invoke())
-        close_button.pack(side="left")
+        if WINDOWS:
+            tk.Frame(controls, bg=palette.hero_border, width=1, height=16).pack(
+                side="left", padx=8)
+            close_image = icon(controls, "close", round(16 * self.scale), palette.ink)
+            close_button = text_button(
+                controls, "关闭", self.close, bg=palette.hero, fg=palette.ink,
+                hover_bg=palette.hero_border, image=close_image,
+                padx=round(6 * self.scale), pady=round(6 * self.scale))
+            close_button.bind("<Return>", lambda _: close_button.invoke())
+            close_button.pack(side="left")
 
         size = round(64 * self.scale)
         art = tk.Canvas(top, width=size + 12, height=size, bg=palette.hero, highlightthickness=0)
@@ -622,9 +662,10 @@ class StickyWindow:
             art.grid_configure(rowspan=2 if stacked else 1)
 
         top.bind("<Configure>", arrange_masthead)
-        for area in (hero, top, title, controls, art):
-            area.configure(cursor="fleur")
-            area.bind("<ButtonPress-1>", self.drag_header)
+        if WINDOWS:
+            for area in (hero, top, title, controls, art):
+                area.configure(cursor="fleur")
+                area.bind("<ButtonPress-1>", self.drag_header)
 
     def on_map(self, event):
         if event.widget is self.root:
@@ -852,7 +893,7 @@ class StickyWindow:
 
     def toggle_pin(self):
         self.root.attributes("-topmost", self.pinned.get())
-        if self.orange_theme:
+        if WINDOWS and self.orange_theme:
             self.rounded_window.refresh()
 
     def on_unmap(self, event):
@@ -1160,9 +1201,9 @@ class StickyWindow:
     def open_thread(self, thread_id):
         self.dismiss_project(redraw=True)
         try:
-            os.startfile("codex://threads/" + quote(thread_id, safe=""))
+            open_thread_link(thread_id)
         except OSError:
-            messagebox.showerror("打开会话失败", "Windows 无法打开 Codex 会话链接。",
+            messagebox.showerror("打开会话失败", "请确认本机已安装 Codex 桌面应用。",
                                  parent=self.root)
         else:
             self.root.after(1300, self.refresh_threads)
@@ -1180,36 +1221,43 @@ def main():
         name = f"project-color-demo-{options.project_color_demo}"
     else:
         name = "hover-preview" if options.preview else "window"
-    activation = Event(f"{name}-activate")
     instance = Instance(name)
-    if not instance.primary:
-        if not options.background:
-            activation.signal()
-        activation.close()
-        return
-    if sys.platform == "win32":
-        ctypes.windll.user32.SetProcessDPIAware()
+    activation = None
     try:
+        activation = Event(f"{name}-activate")
+        if not instance.primary:
+            if not options.background:
+                activation.signal()
+            return
+        if WINDOWS:
+            ctypes.windll.user32.SetProcessDPIAware()
         root = tk.Tk()
         if options.background:
             root.withdraw()
         window = StickyWindow(root, preview=options.preview,
                               project_color_demo=options.project_color_demo)
 
+        def show_window():
+            window.restore()
+            root.deiconify()
+            root.lift()
+            root.focus_force()
+
         def check_activation():
             if activation.wait():
-                window.restore()
-                root.deiconify()
-                root.lift()
-                root.focus_force()
+                show_window()
             root.after(250, check_activation)
 
+        if MACOS:
+            root.createcommand("::tk::mac::ReopenApplication", show_window)
+            root.createcommand("::tk::mac::Quit", window.close)
         if options.background:
             root.after_idle(window.collapse)
         root.after(250, check_activation)
         root.mainloop()
     finally:
-        activation.close()
+        if activation is not None:
+            activation.close()
         instance.close()
 
 
