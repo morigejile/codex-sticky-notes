@@ -66,8 +66,8 @@ class LifecycleTests(unittest.TestCase):
                 self.assertEqual(popen.call_args.kwargs["creationflags"], subprocess.CREATE_NO_WINDOW)
 
     @unittest.skipUnless(WINDOWS, "Windows window entry points")
-    def test_main_launchers_use_the_same_orange_instance(self):
-        for args in ([], ["--background"], ["--orange-demo"]):
+    def test_manual_and_background_launch_use_the_same_orange_instance(self):
+        for args in ([], ["--background"]):
             with (self.subTest(args=args), patch.object(sys, "argv", ["window.py", *args]),
                   patch.object(window, "Instance") as instance, patch.object(window, "Event") as event,
                   patch.object(window.tk, "Tk") as tk, patch.object(window, "StickyWindow") as notes,

@@ -1,2 +1,2 @@
 @echo off
-python.exe -B "%~dp0plugins\codex-sticky-notes\launch.py" --orange-demo
+call "%~dp0Open-Codex-Sticky-Notes.cmd"

@@ -544,7 +544,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--preview", action="store_true")
-    mode.add_argument("--orange-demo", action="store_true", help=argparse.SUPPRESS)
     mode.add_argument("--project-color-demo", choices=("vivid-pastels", "high-contrast"))
     options = parser.parse_args()
     with tempfile.TemporaryDirectory() as temp:

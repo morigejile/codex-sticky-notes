@@ -1317,7 +1317,6 @@ def main():
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--background", action="store_true")
     mode.add_argument("--preview", action="store_true")
-    mode.add_argument("--orange-demo", action="store_true", help=argparse.SUPPRESS)
     mode.add_argument("--project-color-demo", choices=PROJECT_COLOR_DEMOS)
     options = parser.parse_args()
     if options.project_color_demo:
