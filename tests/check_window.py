@@ -81,6 +81,44 @@ def widget_text(widget):
     return widget.getvar(variable) if variable else widget["text"]
 
 
+def check_large_project(window, thread):
+    root = window.root
+    threads = [dict(thread, id=f"large-{index}", title=f"示例会话 {index}",
+                    updated=thread["updated"] - index) for index in range(300)]
+    group, = group_threads(threads)
+    card = window.project_cards[thread["project_key"]]
+    try:
+        window.open_project_with_keyboard(card, group)
+        popup = window.popup
+        assert len(popup.links) < 40
+        assert "large-299" not in popup.links
+        first = popup.links["large-0"]
+        until(root, lambda: root.focus_get() is first)
+        first.event_generate("<Shift-Tab>")
+        until(root, lambda: "large-299" in popup.links and root.focus_get() is popup.links["large-299"])
+        last = popup.links["large-299"]
+        assert screen_box(last)[3] <= screen_box(popup.page.canvas)[3]
+        last.event_generate("<Tab>")
+        until(root, lambda: root.focus_get() is first)
+
+        window.dismiss_project()
+        window.open_project_with_keyboard(card, group)
+        popup = window.popup
+        popup.page.canvas.yview_moveto(1)
+        until(root, lambda: "large-299" in popup.links and popup.links["large-299"].winfo_viewable())
+        assert "large-150" not in popup.links
+        assert len(popup.links) < 80
+        last = popup.links["large-299"]
+        with (patch("launch.os.startfile") as startfile,
+              patch.object(window, "refresh_threads", wraps=window.refresh_threads) as refresh_threads):
+            last.event_generate("<ButtonRelease-1>", x=12, y=12)
+            startfile.assert_called_once_with("codex://threads/large-299")
+            until(root, lambda: refresh_threads.called and window.pending is None)
+        assert window.popup is None
+    finally:
+        window.dismiss_project()
+
+
 def check_languages(store, threads, settings):
     root = tk.Tk()
     window = StickyWindow(root, store, lambda: threads, settings_path=settings)
@@ -112,7 +150,8 @@ def check_languages(store, threads, settings):
         assert window.popup.links["running"].caption == "To review"
         assert window.popup.links["running"].title == "检查新版本"
         for card in window.popup.links.values():
-            assert card.bbox("session-status")[2] < card.winfo_width()
+            if card.winfo_viewable():
+                assert card.bbox("session-status")[2] < card.winfo_width()
         window.language_menu.invoke(1)
         until(root, lambda: root.title() == "Codex 便签")
         assert load_language(settings) == "zh-CN"
@@ -343,12 +382,32 @@ def check_window(store):
         root.update()
         point_at(window.entry)
         until(root, lambda: window.popup is None)
+
+        original_threads = threads
+        threads = [dict(thread, title="刷新后的标题", updated=now + 1)
+                   if thread["id"] == "read" else thread for thread in threads]
+        window.refresh_threads()
+        until(root, lambda: window.threads == threads)
+        assert list(window.project_cards) == ["read", "one", "two", "unknown"]
+        assert window.project_cards["read"] is read
+        assert window.project_cards["one"] is one
+        assert read.winfo_rootx() < one.winfo_rootx()
+        assert read.tk_focusNext() is one
+        point_at(read)
+        until(root, lambda: window.popup is not None and window.popup.winfo_viewable())
+        assert window.popup.links["read"].title == "刷新后的标题"
+        point_at(window.entry)
+        until(root, lambda: window.popup is None)
+        threads = original_threads
+        window.refresh_threads()
+        until(root, lambda: window.threads == threads)
+
         point_at(one)
         until(root, lambda: window.popup is not None and window.popup.winfo_viewable())
         popup = window.popup
         assert popup.anchor is one
         assert popup.links["one"]["bg"] == palette.card
-        assert list(popup.links) == ["running", "one", *older_ids]
+        assert list(popup.links) == ["running", "one", *older_ids][:len(popup.links)]
         first, second = popup.links["running"], popup.links["one"]
         expected = {"running": "#AEE1BC", "one": "#FFD77D", "older-0": "#F7EEEA",
                     "older-1": "#D5D8EF", "older-2": "#F7EEEA", "older-3": "#F7EEEA"}
@@ -495,6 +554,7 @@ def check_window(store):
         assert not window_style(root) & WS_CAPTION
         assert window.rounded_window.shape is not None
         check_window_overlay(root, window.rounded_window)
+        check_large_project(window, threads[0])
     finally:
         pointer.stop()
         window.close()

@@ -14,13 +14,13 @@ from palette import ORANGE
 FONT = "PingFang SC" if sys.platform == "darwin" else "Microsoft YaHei UI"
 
 
-def ui_font(widget, size, weight="normal"):
+def ui_font(size, weight="normal"):
     return FONT, size + ORANGE.font_delta, weight
 
 
 def label(parent, text, *, size=10, color=None, bg=None, weight="normal", **kwargs):
     palette = ORANGE
-    return tk.Label(parent, text=text, font=ui_font(parent, size, weight), fg=color or palette.ink,
+    return tk.Label(parent, text=text, font=ui_font(size, weight), fg=color or palette.ink,
                     bg=bg or palette.paper, anchor="w", justify="left", **kwargs)
 
 
@@ -28,7 +28,7 @@ def text_button(parent, text, command, *, bg=None, fg=None, hover_bg=None, **kwa
     palette = ORANGE
     bg, fg = bg or palette.paper, fg or palette.accent
     hover_bg = hover_bg or palette.hover
-    control = tk.Button(parent, text=text, command=command, font=ui_font(parent, 10), bg=bg, fg=fg,
+    control = tk.Button(parent, text=text, command=command, font=ui_font(10), bg=bg, fg=fg,
                         activebackground=hover_bg, activeforeground=fg, relief="flat", bd=0,
                         highlightthickness=1, highlightbackground=bg, highlightcolor=palette.accent,
                         cursor="hand2", **kwargs)
@@ -56,7 +56,7 @@ def capsule_switch(parent, text, variable, command, scale):
     bg = parent["bg"]
     control = tk.Checkbutton(
         parent, text=text, variable=variable, command=command,
-        font=ui_font(parent, 10), bg=bg, activebackground=bg,
+        font=ui_font(10), bg=bg, activebackground=bg,
         fg=palette.muted, activeforeground=palette.ink, selectcolor=bg,
         indicatoron=False, bd=0, relief="flat", offrelief="flat", overrelief="flat",
         highlightthickness=1, highlightbackground=bg, highlightcolor=palette.accent,
@@ -184,7 +184,7 @@ class PillButton(RoundedSurface):
         super().__init__(parent, outside=outside, fill=self.normal, radius=radius, border=border,
                          antialias=True)
         ink = palette.ink
-        self.control = tk.Button(self, text=text, command=command, font=ui_font(self, 9, "bold"),
+        self.control = tk.Button(self, text=text, command=command, font=ui_font(9, "bold"),
                                  bg=self.normal, fg=ink, activebackground=self.hover,
                                  activeforeground=ink, relief="flat", bd=0,
                                  highlightthickness=0, cursor="hand2")
@@ -248,8 +248,8 @@ class ProjectCard(tk.Canvas):
         self.scale = scale
         self.selected = False
         self.focused = False
-        self.title_font = tkfont.Font(self, font=ui_font(self, 10, "bold"))
-        self.small_font = tkfont.Font(self, font=ui_font(self, 8))
+        self.title_font = tkfont.Font(self, font=ui_font(10, "bold"))
+        self.small_font = tkfont.Font(self, font=ui_font(8))
         self.title_top = round(32 * scale)
         self.badge_height = self.small_font.metrics("linespace") + round(4 * scale)
         self.title_badge_gap = max(1, round(3 * scale))
@@ -264,6 +264,12 @@ class ProjectCard(tk.Canvas):
     def set_selected(self, active):
         self.selected = active
         self.paint()
+
+    def update_content(self, title, hint, status, caption):
+        content = title, hint, status, caption
+        if content != (self.title, self.hint, self.status, self.caption):
+            self.title, self.hint, self.status, self.caption = content
+            self.paint()
 
     def compact_height(self):
         return (self.title_top + 2 * self.title_font.metrics("linespace")

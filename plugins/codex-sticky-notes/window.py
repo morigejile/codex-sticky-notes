@@ -96,18 +96,12 @@ def popup_background(widget, fallback):
     return fallback
 
 
-def layout_tiles(cards, width, scale, *, gap, target, maximum, column_limit, height=None):
-    if width < 2:
-        return
+def tile_dimensions(width, scale, *, gap, target, maximum, column_limit):
     gap = round(gap * scale)
     target = round(target * scale)
     columns = max(1, min(column_limit, (width + gap) // (target + gap)))
-    side = min(round(maximum * scale), (width - gap * (columns - 1)) // columns)
-    for index, card in enumerate(cards):
-        row, column = divmod(index, columns)
-        card.configure(width=side, height=side if height is None else height)
-        card.grid(row=row, column=column, padx=(0, gap if column < columns - 1 else 0),
-                  pady=(0, gap))
+    side = max(1, min(round(maximum * scale), (width - gap * (columns - 1)) // columns))
+    return columns, side, gap
 
 
 class FloatingNote(tk.Toplevel):
@@ -214,7 +208,6 @@ class FloatingNote(tk.Toplevel):
         if self.tooltip is None:
             self.tooltip = tk.Toplevel(self)
             self.tooltip.withdraw()
-            self.tooltip.notes_palette = self.palette
             self.tooltip.overrideredirect(True)
             self.tooltip.attributes("-topmost", True)
             outside = popup_background(self.tooltip, self.palette.card)
@@ -277,7 +270,7 @@ class FloatingNote(tk.Toplevel):
 
 
 class ScrollPage(tk.Frame):
-    def __init__(self, parent, *, bg=None, padding=(20, 18), bottom_radius=0):
+    def __init__(self, parent, *, bg=None, padding=(20, 18), bottom_radius=0, virtual=False):
         bg = bg or ORANGE.paper
         super().__init__(parent, bg=bg)
         self.canvas = tk.Canvas(self, bg=bg, highlightthickness=0)
@@ -286,16 +279,21 @@ class ScrollPage(tk.Frame):
         self.canvas.configure(yscrollcommand=self.bar.set)
         self.bar.pack(side="right", fill="y", pady=10)
         self.canvas.pack(side="left", fill="both", expand=True)
-        self.body = tk.Frame(self.canvas, bg=bg, padx=padding[0], pady=padding[1])
-        self.content = self.canvas.create_window((0, 0), window=self.body, anchor="nw")
-        self.body.bind("<Configure>", lambda _: self.canvas.configure(
-            scrollregion=self.canvas.bbox("all")))
-        def size_viewport(event):
-            self.canvas.itemconfigure(self.content, width=event.width)
-            if WINDOWS and bottom_radius:
-                round_scroll_bottom(self.canvas, event.width, event.height, padding[0], bottom_radius)
+        if virtual:
+            self.content = self.canvas.create_rectangle(0, 0, 0, 0, width=0, outline="")
+        else:
+            self.body = tk.Frame(self.canvas, bg=bg, padx=padding[0], pady=padding[1])
+            self.content = self.canvas.create_window((0, 0), window=self.body, anchor="nw")
+            self.body.bind("<Configure>", lambda _: self.canvas.configure(
+                scrollregion=self.canvas.bbox("all")))
 
-        self.canvas.bind("<Configure>", size_viewport)
+            def size_viewport(event):
+                self.canvas.itemconfigure(self.content, width=event.width)
+                if WINDOWS and bottom_radius:
+                    round_scroll_bottom(self.canvas, event.width, event.height, padding[0], bottom_radius)
+
+            self.canvas.bind("<Configure>", size_viewport)
+
         self.wheel_owner = self.winfo_toplevel()
         self.wheel_step = 1 if MACOS and tk.TkVersion < 9 else 120
         self.scroll_bindings = {
@@ -323,19 +321,19 @@ class ScrollPage(tk.Frame):
                 fraction = self.canvas.yview()[0] - int(vertical) / (bounds[3] - bounds[1])
                 self.canvas.yview_moveto(fraction)
 
-    def reveal(self, widget):
-        bounds = self.canvas.bbox(self.content)
+    def reveal(self, top, height):
+        bounds = self.tk.splitlist(self.canvas.cget("scrollregion"))
         if not bounds:
             return
-        top = widget.winfo_y()
-        height = self.canvas.winfo_height()
+        start, end = float(bounds[1]), float(bounds[3])
+        viewport_height = self.canvas.winfo_height()
         current = self.canvas.canvasy(0)
-        if widget.winfo_height() > height:
+        if height > viewport_height:
             desired = top
         else:
-            desired = max(top + widget.winfo_height() - height, min(top, current))
-        if desired != current and bounds[3] > bounds[1]:
-            self.canvas.yview_moveto((desired - bounds[1]) / (bounds[3] - bounds[1]))
+            desired = max(top + height - viewport_height, min(top, current))
+        if desired != current and end > start:
+            self.canvas.yview_moveto((desired - start) / (end - start))
 
 
 class ProjectPopup(tk.Toplevel):
@@ -356,13 +354,15 @@ class ProjectPopup(tk.Toplevel):
         self.anchor_box = None
         self.uses_outer_edge = False
         self.content_width = None
+        self.sessions = group["threads"]
+        self.open_thread = open_thread
         self.links = {}
         self.project_title = group["title"]
         self.project_path = group["subtitle"]
         heading_size = 15
-        self.title_font = tkfont.Font(self, font=ui_font(self, heading_size, "bold"))
-        self.path_font = tkfont.Font(self, font=ui_font(self, 8))
-        card_title_font = tkfont.Font(self, font=ui_font(self, 10, "bold"))
+        self.title_font = tkfont.Font(self, font=ui_font(heading_size, "bold"))
+        self.path_font = tkfont.Font(self, font=ui_font(8))
+        self.card_title_font = tkfont.Font(self, font=ui_font(10, "bold"))
         shell = RoundedSurface(self, outside=outside, radius=round(17 * scale),
                                border=palette.popup_border)
         shell.pack(fill="both", expand=True)
@@ -371,9 +371,8 @@ class ProjectPopup(tk.Toplevel):
                          pady=(round(12 * scale), round(11 * scale)))
         title_row = tk.Frame(self.header, bg=palette.card)
         title_row.pack(fill="x")
-        status_color = (palette.muted)
-        self.count = label(title_row, self.notes_tr.count("sessions.count", len(group["threads"])), size=9,
-                           color=status_color, bg=palette.card)
+        self.count = label(title_row, self.notes_tr.count("sessions.count", len(self.sessions)), size=9,
+                           color=palette.muted, bg=palette.card)
         self.count.pack(side="right", padx=(8, 0))
         self.title_label = label(title_row, "", weight="bold", size=heading_size, bg=palette.card)
         self.title_label.pack(side="left", fill="x", expand=True)
@@ -381,18 +380,66 @@ class ProjectPopup(tk.Toplevel):
         if self.project_path:
             self.path_label = label(self.header, "", size=8, color=palette.muted, bg=palette.card)
             self.path_label.pack(fill="x", pady=(2, 0))
-        self.update_idletasks()
-        self.page = ScrollPage(shell, bg=palette.card, padding=(self.TILE_PADDING, 0))
+        self.page = ScrollPage(shell, bg=palette.card, virtual=True)
         self.page.pack(fill="both", expand=True, padx=self.PAGE_INSET, pady=(0, 10))
-        for thread in group["threads"]:
-            thread_id = thread["id"]
-            card = SessionCard(self.page.body, thread, scale, card_title_font, self.path_font,
-                               lambda thread_id=thread_id: open_thread(thread_id))
-            card.bind("<FocusIn>", lambda event: self.page.reveal(event.widget), add="+")
-            self.links[thread_id] = card
+        self.tile_height = self.make_session_card(0).compact_height()
         self.place_next_to_anchor()
+        self.page.canvas.configure(yscrollcommand=self.update_scrollbar)
         self.deiconify()
         self.lift()
+        self.update_idletasks()
+        self.render_visible_sessions()
+
+    def make_session_card(self, index):
+        thread = self.sessions[index]
+        thread_id = thread["id"]
+        canvas = self.page.canvas
+        card = SessionCard(canvas, thread, self.scale, self.card_title_font, self.path_font,
+                           lambda: self.open_thread(thread_id))
+        card.window_item = canvas.create_window(0, 0, window=card, anchor="nw")
+        card.bind("<FocusIn>", lambda _: self.reveal_session(index), add="+")
+        card.bind("<<NextWindow>>", lambda _: self.focus_session(index + 1))
+        card.bind("<<PrevWindow>>", lambda _: self.focus_session(index - 1))
+        self.links[thread_id] = card
+        return card
+
+    def place_session_card(self, index, card):
+        row, column = divmod(index, self.columns)
+        x = self.TILE_PADDING + column * (self.tile_width + self.tile_gap)
+        canvas = self.page.canvas
+        canvas.coords(card.window_item, x, row * self.row_height)
+        canvas.itemconfigure(card.window_item, width=self.tile_width, height=self.tile_height)
+
+    def session_card(self, index):
+        card = self.links.get(self.sessions[index]["id"])
+        if card is None:
+            card = self.make_session_card(index)
+            self.place_session_card(index, card)
+        return card
+
+    def update_scrollbar(self, first, last):
+        self.page.bar.set(first, last)
+        self.render_visible_sessions()
+
+    def render_visible_sessions(self):
+        canvas = self.page.canvas
+        top = max(0, int(canvas.canvasy(0)))
+        first_row = top // self.row_height
+        # Keep the following row ready for the next small scroll.
+        end_row = (top + canvas.winfo_height() - 1) // self.row_height + 2
+        for index in range(first_row * self.columns, min(len(self.sessions), end_row * self.columns)):
+            self.session_card(index)
+
+    def reveal_session(self, index):
+        self.page.reveal((index // self.columns) * self.row_height, self.tile_height)
+
+    def focus_session(self, index):
+        index %= len(self.sessions)
+        card = self.session_card(index)
+        self.reveal_session(index)
+        card.update_idletasks()
+        card.focus_force()
+        return "break"
 
     def place_next_to_anchor(self):
         box = screen_box(self.anchor)
@@ -404,7 +451,7 @@ class ProjectPopup(tk.Toplevel):
         left, top, right, bottom = work_area(self.anchor)
         x0, y0, x1, y1 = box
         gap = round(8 * self.scale)
-        columns = min(3, len(self.links))
+        columns = min(3, len(self.sessions))
         tile_size, width_limit = 110, 376
         preferred = round(min(width_limit, 34 + tile_size * columns + 8 * (columns - 1))
                           * self.scale)
@@ -442,16 +489,24 @@ class ProjectPopup(tk.Toplevel):
             if self.path_label is not None:
                 self.path_label.configure(text=two_line_text(
                     self.project_path, self.path_font, max(70, width - 32)))
-            tile_width = width - self.page.bar.winfo_reqwidth()
-            tile_width -= 2 * (self.PAGE_INSET + self.TILE_PADDING)
-            cards = self.links.values()
-            tile_height = next(iter(cards)).compact_height() if cards else None
-            layout_tiles(cards, tile_width, self.scale, height=tile_height,
-                         gap=8, target=98, maximum=tile_size + 4, column_limit=columns)
+            viewport_width = width - self.page.bar.winfo_reqwidth() - 2 * self.PAGE_INSET
+            self.columns, self.tile_width, self.tile_gap = tile_dimensions(
+                viewport_width - 2 * self.TILE_PADDING, self.scale, gap=8, target=98,
+                maximum=tile_size + 4, column_limit=columns)
+            self.row_height = self.tile_height + self.tile_gap
+            row_count = (len(self.sessions) + self.columns - 1) // self.columns
+            self.list_height = row_count * self.row_height
+            canvas = self.page.canvas
+            bounds = (0, 0, viewport_width, self.list_height)
+            canvas.coords(self.page.content, *bounds)
+            canvas.configure(scrollregion=bounds)
+            for index, thread in enumerate(self.sessions):
+                card = self.links.get(thread["id"])
+                if card is not None:
+                    self.place_session_card(index, card)
             self.update_idletasks()
         padding = round(34 * self.scale)
-        height = min(max_height, self.header.winfo_reqheight() + self.page.body.winfo_reqheight()
-                     + padding)
+        height = min(max_height, self.header.winfo_reqheight() + self.list_height + padding)
         if side_space >= min_width:
             top_offset = round(36 * self.scale)
             y = min(max(top, y0 - top_offset), bottom - height)
@@ -489,6 +544,7 @@ class StickyWindow:
         self.unread_threads = None
         self.rendered_threads = None
         self.project_cards = {}
+        self.project_groups = {}
         self.popup = None
         self.hover_timer = None
         self.pending_hover = None
@@ -566,7 +622,7 @@ class StickyWindow:
     def make_language_menu(self, parent):
         palette = self.palette
         button = tk.Menubutton(
-            parent, textvariable=self.text("language.menu"), font=ui_font(parent, 10),
+            parent, textvariable=self.text("language.menu"), font=ui_font(10),
             bg=palette.hero, fg=palette.ink, activebackground=palette.hero_border,
             activeforeground=palette.ink, relief="flat", bd=0, padx=5, takefocus=True,
         )
@@ -613,10 +669,10 @@ class StickyWindow:
         self.collapse_button = text_button(
             parent, "", self.collapse, bg=palette.hero, fg=palette.ink, padx=3,
             textvariable=self.text("action.collapse"))
-        self.collapse_button.configure(font=ui_font(parent, 11))
+        self.collapse_button.configure(font=ui_font(11))
         self.pin_control = tk.Checkbutton(
             parent, textvariable=self.text("action.pin"), variable=self.pinned, command=self.toggle_pin,
-            font=ui_font(parent, 11), bg=palette.hero, fg=palette.ink, activebackground=palette.hero,
+            font=ui_font(11), bg=palette.hero, fg=palette.ink, activebackground=palette.hero,
             activeforeground=palette.ink, selectcolor=palette.card, cursor="hand2", padx=0,
             highlightthickness=1, highlightbackground=palette.hero, highlightcolor=palette.accent,
         )
@@ -767,7 +823,7 @@ class StickyWindow:
         add_button = PillButton(entry_row, "", self.add_task, outside=panel_bg,
                                 radius=round(10 * self.scale))
         add_button.control.configure(textvariable=self.text("todo.add"))
-        add_button.control.configure(font=ui_font(entry_row, 11, "bold"))
+        add_button.control.configure(font=ui_font(11, "bold"))
         add_button.control.pack_configure(padx=round(21 * self.scale),
                                           pady=round(8 * self.scale))
         add_button.pack(side="right", padx=(round(9 * self.scale), 0))
@@ -776,7 +832,7 @@ class StickyWindow:
                                      radius=round(9 * self.scale),
                                      border=entry_border, antialias=True)
         entry_shell.pack(side="left", fill="both", expand=True)
-        self.entry = tk.Entry(entry_shell, font=ui_font(entry_shell, 11),
+        self.entry = tk.Entry(entry_shell, font=ui_font(11),
                               bg=palette.field, fg=palette.ink,
                               relief="flat", bd=0, highlightthickness=0,
                               insertbackground=palette.ink)
@@ -884,6 +940,8 @@ class StickyWindow:
         self.thread_list = tk.Frame(thread_panel, bg=panel_bg)
         self.thread_list.pack(fill="x")
         self.thread_list.bind("<Configure>", lambda event: self.layout_project_cards(event.width))
+        self.empty_projects = label(self.thread_list, "", color=palette.muted,
+                                    textvariable=self.text("sessions.empty"), bg=panel_bg, pady=8)
         self.thread_feedback.trace_add("write", lambda *_: summary.pack(
             fill="x", pady=(0, 10), before=self.thread_list) if self.thread_feedback.get()
             else summary.pack_forget())
@@ -965,7 +1023,7 @@ class StickyWindow:
         checkbox = tk.Checkbutton(
             row, text=task["text"], variable=value,
             command=lambda: self.change_task(task, done=value.get()),
-            font=ui_font(row, 11,
+            font=ui_font(11,
                          "overstrike" if task["done"] else "normal"),
             bg=palette.card, fg=palette.muted if task["done"] else palette.ink,
             activebackground=palette.card, selectcolor=palette.field, anchor="w", justify="left",
@@ -1070,51 +1128,68 @@ class StickyWindow:
         if self.threads == self.rendered_threads:
             return
         self.rendered_threads = self.threads
-        for child in self.thread_list.winfo_children():
-            child.destroy()
-        self.project_cards.clear()
-        if not self.threads:
-            label(self.thread_list, "", color=self.palette.muted,
-                  textvariable=self.text("sessions.empty"),
-                  bg=self.thread_list["bg"], pady=8).grid(sticky="w")
         groups = group_threads(self.threads, project_label=lambda key, name: project_name(key, name, self.tr))
+        self.project_groups = {group["key"]: group for group in groups}
+        if groups:
+            self.empty_projects.grid_remove()
+        else:
+            self.empty_projects.grid(sticky="w")
         paths = defaultdict(list)
         for group in groups:
             if group["subtitle"]:
                 paths[group["title"]].append(group["subtitle"])
+        old_cards = self.project_cards
+        cards = {}
         for group in groups:
+            key = group["key"]
             hint = (distinguishing_folder(group["subtitle"], paths[group["title"]])
                     if group["subtitle"] else "")
-            self.make_project_card(group, hint)
-        self.layout_project_cards(self.thread_list.winfo_width())
+            status = group["status"]
+            caption = self.tr(f"project.{status}", count=group.get(status))
+            card = old_cards.get(key)
+            if card is None:
+                card = self.make_project_card(key, group["title"], hint, status, caption)
+            else:
+                card.update_content(group["title"], hint, status, caption)
+            cards[key] = card
+        self.project_cards = cards
+        for key in old_cards.keys() - cards.keys():
+            old_cards[key].destroy()
+        if tuple(cards) != tuple(old_cards):
+            # Tk traverses sibling widgets in stacking order.
+            for card in cards.values():
+                tk.Misc.tkraise(card)
+            self.layout_project_cards(self.thread_list.winfo_width())
         self.set_thread_feedback(None)
 
-    def make_project_card(self, group, hint):
-        status = group["status"]
-        caption = self.tr(f"project.{status}", count=group.get(status))
-        card = ProjectCard(self.thread_list, group["title"], hint, status, caption,
-                           self.scale)
+    def make_project_card(self, key, title, hint, status, caption):
+        card = ProjectCard(self.thread_list, title, hint, status, caption, self.scale)
         for sequence in ("<Return>", "<space>"):
-            card.bind(sequence, lambda _: self.open_project_with_keyboard(card, group))
-        card.bind("<Enter>", lambda _: self.schedule_project_hover(card, group))
-        card.bind("<ButtonRelease-1>", lambda _: self.open_project_under_pointer(card, group))
-        self.project_cards[group["key"]] = card
+            card.bind(sequence, lambda _: self.open_project_with_keyboard(card, self.project_groups[key]))
+        card.bind("<Enter>", lambda _: self.schedule_project_hover(card, key))
+        card.bind("<ButtonRelease-1>", lambda _: self.open_project_under_pointer(card, key))
+        return card
 
     def layout_project_cards(self, width):
         cards = self.project_cards.values()
-        if not cards:
+        if not cards or width < 2:
             return
         height = next(iter(cards)).compact_height()
-        layout_tiles(cards, width, self.scale, height=height, gap=9,
-                     target=98, maximum=145, column_limit=6)
+        columns, side, gap = tile_dimensions(width, self.scale, gap=9,
+                                             target=98, maximum=145, column_limit=6)
+        for index, card in enumerate(cards):
+            row, column = divmod(index, columns)
+            card.configure(width=side, height=height)
+            card.grid(row=row, column=column, padx=(0, gap if column < columns - 1 else 0),
+                      pady=(0, gap))
 
-    def schedule_project_hover(self, card, group):
+    def schedule_project_hover(self, card, key):
         if self.pending_hover is not None:
             self.root.after_cancel(self.pending_hover)
 
         def show():
             self.pending_hover = None
-            self.open_project_under_pointer(card, group)
+            self.open_project_under_pointer(card, key)
 
         crossing_popup_gap = (
             self.popup is not None and self.popup.uses_outer_edge
@@ -1122,10 +1197,10 @@ class StickyWindow:
         )
         self.pending_hover = self.root.after(290 if crossing_popup_gap else 95, show)
 
-    def open_project_under_pointer(self, card, group):
+    def open_project_under_pointer(self, card, key):
         pointed = self.root.winfo_containing(*self.root.winfo_pointerxy())
-        if within(pointed, card):
-            self.open_project(card, group)
+        if self.project_cards.get(key) is card and within(pointed, card):
+            self.open_project(card, self.project_groups[key])
 
     def open_project(self, card, group):
         if self.collapsed or (self.popup is not None and self.popup.anchor is card):
@@ -1140,8 +1215,7 @@ class StickyWindow:
         self.open_project(card, group)
         if self.popup is not None:
             self.keyboard_popup = True
-            first_link = next(iter(self.popup.links.values()))
-            first_link.focus_force()
+            self.popup.focus_session(0)
         return "break"
 
     def track_project(self):
