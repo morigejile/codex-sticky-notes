@@ -106,15 +106,15 @@ def read_threads(root=CODEX_HOME, limit=30):
     """Return recent user sessions using the local Desktop history index."""
     if type(limit) is not int or not 1 <= limit <= 50:
         raise ValueError("会话数量必须是 1 至 50 的整数。")
-    return _read_threads(Path(root), limit)
+    return _read_threads(Path(root), limit, include_progress=True)
 
 
 def read_project_threads(root=CODEX_HOME):
     """Include all eligible local sessions when calculating project status."""
-    return _read_threads(Path(root), -1)  # SQLite's LIMIT -1 keeps all rows.
+    return _read_threads(Path(root), -1, include_progress=False)
 
 
-def _read_threads(root, limit):
+def _read_threads(root, limit, *, include_progress):
     desktop = _desktop_state(root)
     with closing(_read_only(root / "state_5.sqlite")) as state:
         columns = {row["name"] for row in state.execute("PRAGMA table_info(threads)")}
@@ -134,7 +134,7 @@ def _read_threads(root, limit):
         history.execute("BEGIN")
         threads = []
         for row in rows:
-            thread = _describe_thread(row, history, now)
+            thread = _describe_thread(row, history, now, include_progress=include_progress)
             project_key, name, path = _thread_project(
                 row, desktop, projects, project_aliases, workspaces)
             thread.update(project_key=project_key, project=name, project_path=path)
@@ -291,7 +291,7 @@ def group_threads(threads, *, project_label=None):
     return list(groups.values())
 
 
-def _describe_thread(row, history, now):
+def _describe_thread(row, history, now, *, include_progress):
     turn = history.execute(
         """SELECT turn_id, status FROM thread_turns WHERE thread_id = ?
            ORDER BY rollout_ordinal DESC LIMIT 1""",
@@ -299,30 +299,35 @@ def _describe_thread(row, history, now):
     ).fetchone()
     status = turn["status"] if turn else "unknown"
     updated = row["updated"]
-    progress = ""
+    message = None
     if turn:
+        columns = "item_json, created_at_ms" if include_progress else "created_at_ms"
         message = history.execute(
-            """SELECT item_json, created_at_ms FROM thread_items
+            f"""SELECT {columns} FROM thread_items
                WHERE thread_id = ? AND turn_id = ? AND item_type = 'agentMessage'
                ORDER BY rollout_ordinal DESC LIMIT 1""",
             (row["id"], turn["turn_id"]),
         ).fetchone()
+    if message:
+        updated = max(updated, message["created_at_ms"] or 0)
+
+    if status == "inProgress":
+        status = "running" if now - updated <= 5 * 60 * 1000 else "stale"
+    title = row["name"] or row["title"]
+    thread = {
+        "id": row["id"],
+        "title": title or "未命名会话",
+        "untitled": not title,
+        "updated": updated,
+        "status": status if status in THREAD_STATUSES else "unknown",
+    }
+    if include_progress:
+        progress = ""
         if message:
             try:
                 progress = " ".join(json.loads(message["item_json"])["text"].split())
                 progress = progress[:360] + ("…" if len(progress) > 360 else "")
             except (ValueError, KeyError, TypeError, AttributeError):
                 pass
-            updated = max(updated, message["created_at_ms"] or 0)
-
-    if status == "inProgress":
-        status = "running" if now - updated <= 5 * 60 * 1000 else "stale"
-    title = row["name"] or row["title"]
-    return {
-        "id": row["id"],
-        "title": title or "未命名会话",
-        "untitled": not title,
-        "updated": updated,
-        "status": status if status in THREAD_STATUSES else "unknown",
-        "progress": progress,
-    }
+        thread["progress"] = progress
+    return thread

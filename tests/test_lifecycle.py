@@ -75,7 +75,7 @@ class LifecycleTests(unittest.TestCase):
                 window.main()
                 instance.assert_called_once_with("window")
                 event.assert_called_once_with("window-activate")
-                notes.assert_called_once_with(tk.return_value, preview=False, project_color_demo=None)
+                notes.assert_called_once_with(tk.return_value)
                 self.assertEqual(tk.return_value.withdraw.called, args == ["--background"])
                 self.assertEqual(tk.return_value.after_idle.called, args == ["--background"])
                 if args == ["--background"]:

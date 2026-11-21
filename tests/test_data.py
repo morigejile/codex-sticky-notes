@@ -57,7 +57,7 @@ class StickyNotesTests(unittest.TestCase):
                 id, name, title, cwd, updated_at, updated_at_ms, source, archived
             )""")
             db.executemany("INSERT INTO threads VALUES (?, ?, ?, ?, ?, ?, ?, ?)", [
-                ("open", "手动命名", "原始标题", "D:/项目", now // 1000, now, "vscode", 0),
+                ("open", "手动命名", "原始标题", "D:/项目", (now - 600000) // 1000, now - 600000, "vscode", 0),
                 ("stale", None, "旧会话", "", (now - 900000) // 1000, now - 900000, "cli", 0),
                 ("named", "未命名会话", None, "", 0, 0, "vscode", 0),
                 ("untitled", None, "", "", 0, 0, "vscode", 0),
@@ -87,6 +87,11 @@ class StickyNotesTests(unittest.TestCase):
         self.assertEqual("未命名会话", threads[2]["title"])
         self.assertFalse(threads[2].get("untitled", True))
         self.assertTrue(threads[3].get("untitled", False))
+
+        with closing(sqlite3.connect(self.root / "thread_history_1.sqlite")) as db, db:
+            db.execute("ALTER TABLE thread_items RENAME COLUMN item_json TO message_body")
+        overview = read_project_threads(self.root)
+        self.assertEqual({key: value for key, value in threads[0].items() if key != "progress"}, overview[0])
 
     def test_missing_history_does_not_create_codex_files(self):
         with self.assertRaises(FileNotFoundError):

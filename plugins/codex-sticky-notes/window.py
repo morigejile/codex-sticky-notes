@@ -14,7 +14,7 @@ from tkinter import messagebox, simpledialog, ttk
 from tkinter import font as tkfont
 
 from appearance import (
-    PillButton, ProjectCard, RoundedSurface, SessionCard, capsule_switch, label, note_mark, paint_hills,
+    PillButton, ProjectCard, RoundedSurface, SessionCard, capsule_switch, label, note_mark,
     paint_smooth_rect, rounded_indicator, rounded_rect, text_button, two_line_text, ui_font, wrap,
 )
 from data import (
@@ -25,7 +25,7 @@ from i18n import LANGUAGE_CHOICES, Translator, load_language, project_name, save
 from launch import open_thread_link
 from note_art import load_note_art
 from note_icons import icon
-from palette import ORANGE, ORANGE_MAIN, PROJECT_COLOR_DEMOS, SAGE, palette_for
+from palette import ORANGE
 
 WINDOWS = sys.platform == "win32"
 MACOS = sys.platform == "darwin"
@@ -116,7 +116,7 @@ class FloatingNote(tk.Toplevel):
     def __init__(self, root, restore):
         super().__init__(root)
         self.notes_tr = translator_for(root)
-        self.notes_palette = self.palette = palette_for(root)
+        self.palette = ORANGE
         self.restore = restore
         self.press = None
         self.dragged = False
@@ -128,8 +128,7 @@ class FloatingNote(tk.Toplevel):
         self.attributes("-topmost", True)
         self.attributes("-alpha", 0.67)
         self.title(self.notes_tr("app.open"))
-        self.native_corners = WINDOWS and self.palette.precise_corners
-        outside = (self.palette.floating if self.native_corners
+        outside = (self.palette.floating if WINDOWS
                    else popup_background(self, self.palette.floating))
         self.configure(bg=outside)
 
@@ -139,10 +138,10 @@ class FloatingNote(tk.Toplevel):
         self.face = tk.Canvas(self, width=self.size, height=self.size, bg=outside,
                               highlightthickness=0, cursor="hand2", takefocus=True)
         self.face.pack()
-        if self.native_corners:
+        if WINDOWS:
             self.rounded_window = RoundedWindow(
                 self, round(18 * self.scale), corner_colors=lambda: (self.face["bg"],) * 2)
-        self.art = load_note_art(self.face, round(self.size * 0.85)) if self.palette.precise_corners else None
+        self.art = load_note_art(self.face, round(self.size * 0.85))
         self.face.bind("<Enter>", lambda _: self.set_hover(True))
         self.face.bind("<Leave>", lambda _: self.set_hover(False))
         self.face.bind("<ButtonPress-1>", self.begin_drag)
@@ -158,7 +157,7 @@ class FloatingNote(tk.Toplevel):
         size = self.size
         canvas.delete("all")
         fill = self.palette.action if hovered else self.palette.floating
-        if self.native_corners:
+        if WINDOWS:
             canvas.configure(bg=fill)
             self.rounded_window.refresh()
         else:
@@ -166,11 +165,9 @@ class FloatingNote(tk.Toplevel):
                          outline=self.palette.hero_border if hovered else fill, width=1)
         if self.art is not None:
             canvas.create_image(size / 2, size / 2, image=self.art)
-        elif self.palette.precise_corners:
+        else:
             mark = icon(canvas, "note", round(size * 0.68), self.palette.ink)
             canvas.create_image(size / 2, size / 2, image=mark)
-        else:
-            note_mark(canvas, 0, 0, size / 58, "#fffaf5")
         # The pin in the orange artwork sits near the upper-right of the image.
         x, y = size * 0.73, size * 0.26
         if self.art is not None:
@@ -179,7 +176,7 @@ class FloatingNote(tk.Toplevel):
         highlight = icon(canvas, "dot", round(13 * self.scale), "#62a4ff")
         canvas.create_image(round(x), round(y), image=highlight, tags=("unread-indicator",))
         self.highlight_pin(self.pin_highlight)
-        if (self.palette.precise_corners and hovered and self.press is None
+        if (hovered and self.press is None
                 and self.winfo_viewable()):
             self.show_tooltip()
         elif self.tooltip is not None:
@@ -281,7 +278,7 @@ class FloatingNote(tk.Toplevel):
 
 class ScrollPage(tk.Frame):
     def __init__(self, parent, *, bg=None, padding=(20, 18), bottom_radius=0):
-        bg = bg or palette_for(parent).paper
+        bg = bg or ORANGE.paper
         super().__init__(parent, bg=bg)
         self.canvas = tk.Canvas(self, bg=bg, highlightthickness=0)
         self.bar = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview,
@@ -348,7 +345,7 @@ class ProjectPopup(tk.Toplevel):
     def __init__(self, root, anchor, group, scale, open_thread):
         super().__init__(root)
         self.notes_tr = translator_for(root)
-        self.notes_palette = palette = palette_for(root)
+        palette = ORANGE
         self.withdraw()
         self.overrideredirect(True)
         self.attributes("-topmost", True)
@@ -362,7 +359,7 @@ class ProjectPopup(tk.Toplevel):
         self.links = {}
         self.project_title = group["title"]
         self.project_path = group["subtitle"]
-        heading_size = 15 if palette.precise_corners else 12
+        heading_size = 15
         self.title_font = tkfont.Font(self, font=ui_font(self, heading_size, "bold"))
         self.path_font = tkfont.Font(self, font=ui_font(self, 8))
         card_title_font = tkfont.Font(self, font=ui_font(self, 10, "bold"))
@@ -371,12 +368,10 @@ class ProjectPopup(tk.Toplevel):
         shell.pack(fill="both", expand=True)
         self.header = tk.Frame(shell, bg=palette.card)
         self.header.pack(fill="x", padx=round(14 * scale),
-                         pady=(round(12 * scale), round(11 * scale))
-                         if palette.precise_corners else (11, 3))
+                         pady=(round(12 * scale), round(11 * scale)))
         title_row = tk.Frame(self.header, bg=palette.card)
         title_row.pack(fill="x")
-        status_color = (palette.muted if palette.precise_corners
-                        else palette.project_colors[group["status"]][3])
+        status_color = (palette.muted)
         self.count = label(title_row, self.notes_tr.count("sessions.count", len(group["threads"])), size=9,
                            color=status_color, bg=palette.card)
         self.count.pack(side="right", padx=(8, 0))
@@ -386,8 +381,6 @@ class ProjectPopup(tk.Toplevel):
         if self.project_path:
             self.path_label = label(self.header, "", size=8, color=palette.muted, bg=palette.card)
             self.path_label.pack(fill="x", pady=(2, 0))
-        if not palette.precise_corners:
-            tk.Frame(self.header, bg=palette.line, height=1).pack(fill="x", pady=(7, 0))
         self.update_idletasks()
         self.page = ScrollPage(shell, bg=palette.card, padding=(self.TILE_PADDING, 0))
         self.page.pack(fill="both", expand=True, padx=self.PAGE_INSET, pady=(0, 10))
@@ -412,16 +405,13 @@ class ProjectPopup(tk.Toplevel):
         x0, y0, x1, y1 = box
         gap = round(8 * self.scale)
         columns = min(3, len(self.links))
-        compact = self.notes_palette.precise_corners
-        tile_size, width_limit = (110, 376) if compact else (130, 428)
+        tile_size, width_limit = 110, 376
         preferred = round(min(width_limit, 34 + tile_size * columns + 8 * (columns - 1))
                           * self.scale)
         min_width = min(preferred, round(245 * self.scale))
         outer_left = root_left - left - gap
         outer_right = right - root_right - gap
-        self.uses_outer_edge = (
-            self.notes_palette.precise_corners and max(outer_left, outer_right) >= min_width
-        )
+        self.uses_outer_edge = max(outer_left, outer_right) >= min_width
         if self.uses_outer_edge:
             near_left, near_right = root_left, root_right
             space_left, space_right = outer_left, outer_right
@@ -455,15 +445,15 @@ class ProjectPopup(tk.Toplevel):
             tile_width = width - self.page.bar.winfo_reqwidth()
             tile_width -= 2 * (self.PAGE_INSET + self.TILE_PADDING)
             cards = self.links.values()
-            tile_height = next(iter(cards)).compact_height() if compact and cards else None
+            tile_height = next(iter(cards)).compact_height() if cards else None
             layout_tiles(cards, tile_width, self.scale, height=tile_height,
                          gap=8, target=98, maximum=tile_size + 4, column_limit=columns)
             self.update_idletasks()
-        padding = round(34 * self.scale) if compact else 25
+        padding = round(34 * self.scale)
         height = min(max_height, self.header.winfo_reqheight() + self.page.body.winfo_reqheight()
                      + padding)
         if side_space >= min_width:
-            top_offset = round(36 * self.scale) if compact else 0
+            top_offset = round(36 * self.scale)
             y = min(max(top, y0 - top_offset), bottom - height)
         else:
             y = y1 + gap if down >= up else y0 - height - gap
@@ -481,7 +471,7 @@ class ProjectPopup(tk.Toplevel):
 
 class StickyWindow:
     def __init__(self, root, store=None, thread_reader=read_project_threads, *,
-                 preview=False, orange_demo=True, project_color_demo=None, settings_path=None):
+                 settings_path=None):
         self.root = root
         self.settings_path = APP_HOME / "settings.json" if settings_path is None else settings_path
         self.language_preference = load_language(self.settings_path)
@@ -489,18 +479,7 @@ class StickyWindow:
         self.tr = root.notes_tr = Translator(self.language_preference)
         self.text_variables = {}
         self.reflow_masthead = None
-        orange_theme = (orange_demo and not preview) or project_color_demo is not None
-        self.title_suffix_key = "app.preview" if preview else None
-        self.project_backgrounds = {}
-        if project_color_demo is not None:
-            self.title_suffix_key = f"app.demo.{project_color_demo}"
-            _, self.project_backgrounds = PROJECT_COLOR_DEMOS[project_color_demo]
-        self.orange_theme = orange_theme
-        if orange_theme:
-            root.notes_palette = ORANGE_MAIN if project_color_demo is None else ORANGE
-        else:
-            root.notes_palette = SAGE
-        self.palette = root.notes_palette
+        self.palette = ORANGE
         self.store = store or TaskStore()
         self.thread_reader = thread_reader
         self.pool = ThreadPoolExecutor(max_workers=1)
@@ -527,13 +506,12 @@ class StickyWindow:
         self.fixed_task_rows = None
         self.thread_feedback_key = "sessions.loading"
         self.thread_feedback = tk.StringVar(value=self.tr(self.thread_feedback_key))
-        self.show_project_counts = True
         self.pinned = tk.BooleanVar(value=False)
         self.update_title()
         self.scale = root.winfo_fpixels("1i") / 96
         left, top, right, bottom = work_area(root)
         width = min(round(510 * self.scale), right - left - 55)
-        height = min(round((672 if orange_theme else 700) * self.scale), bottom - top - 70)
+        height = min(round(672 * self.scale), bottom - top - 70)
         x = left + max(20, (right - left - width - round(428 * self.scale)) // 2)
         y = top + (bottom - top - height) // 2
         root.geometry(f"{width}x{height}+{x}+{y}")
@@ -543,7 +521,7 @@ class StickyWindow:
         root.protocol("WM_DELETE_WINDOW", self.close)
         root.bind("<Unmap>", self.on_unmap)
         root.bind("<Escape>", self.escape_project)
-        if WINDOWS and orange_theme:
+        if WINDOWS:
             root.bind("<Map>", self.on_map, add="+")
             self.rounded_window = RoundedWindow(
                 root, round(30 * self.scale), resize_margin=round(6 * self.scale),
@@ -562,19 +540,16 @@ class StickyWindow:
         style.map("Note.Vertical.TScrollbar", background=[("active", self.palette.scroll_hover)])
 
         self.make_header()
-        padding = (round(13 * self.scale), 0) if orange_theme else (20, 18)
-        frame_inset = round(17 * self.scale) if orange_theme else 0
+        padding = (round(13 * self.scale), 0)
+        frame_inset = round(17 * self.scale)
         self.page = ScrollPage(root, padding=padding, bottom_radius=frame_inset)
         # Keep the curved bottom edge outside the scroll viewport.
         self.page.pack(fill="both", expand=True, padx=(0, 6), pady=(0, frame_inset))
-        if orange_theme:
-            self.task_inset = frame_inset
-            self.inline_task_host = tk.Frame(self.page.body, bg=paper)
-            self.inline_task_host.pack(fill="x", pady=(self.task_inset, 0))
-            self.root.bind("<Configure>", self.resize_fixed_task_rows, add="+")
-            self.make_tasks(self.inline_task_host)
-        else:
-            self.make_tasks(self.page.body)
+        self.task_inset = frame_inset
+        self.inline_task_host = tk.Frame(self.page.body, bg=paper)
+        self.inline_task_host.pack(fill="x", pady=(self.task_inset, 0))
+        self.root.bind("<Configure>", self.resize_fixed_task_rows, add="+")
+        self.make_tasks(self.inline_task_host)
         self.make_threads(self.page.body)
         self.refresh_tasks()
         self.refresh_threads()
@@ -586,10 +561,7 @@ class StickyWindow:
         return self.text_variables[key]
 
     def update_title(self):
-        title = self.tr("app.title")
-        if self.title_suffix_key:
-            title = f"{title} · {self.tr(self.title_suffix_key)}"
-        self.root.title(title)
+        self.root.title(self.tr("app.title"))
 
     def make_language_menu(self, parent):
         palette = self.palette
@@ -636,68 +608,26 @@ class StickyWindow:
             self.root.update_idletasks()
             self.reflow_masthead()
 
-    def make_header(self):
+    def make_header_controls(self, parent):
         palette = self.palette
-        if self.orange_theme:
-            if WINDOWS:
-                self.root.iconphoto(True, icon(self.root, "note", 32, palette.accent))
-            self.make_orange_masthead()
-            return
-
-        hero = RoundedSurface(self.root, fill=palette.hero, radius=20, border=palette.hero_border)
-        hero.pack(fill="x", padx=(20, 20), pady=(14, 0))
-        window_icon = tk.PhotoImage(master=self.root, width=24, height=24)
-        for color, bounds in (
-            (palette.action, (2, 2, 22, 22)), (palette.card, (7, 5, 17, 19)),
-            (palette.accent, (9, 9, 15, 10)), (palette.accent, (9, 12, 13, 13)),
-        ):
-            window_icon.put(color, to=bounds)
-        if WINDOWS:
-            self.root.iconphoto(True, window_icon)
-        top = tk.Frame(hero, bg=palette.hero)
-        top.pack(fill="x", padx=14, pady=12)
-        size = round(46 * self.scale)
-        logo = tk.Canvas(top, width=size, height=size, bg=palette.hero, highlightthickness=0)
-        logo.pack(side="left", padx=(0, 10))
-        rounded_rect(logo, 1, 1, size - 2, size - 2, size * 0.3,
-                     fill=palette.card, outline=palette.hero_border)
-        note_mark(logo, 0, 1, size / 60, palette.accent)
-        label(top, "", size=17, weight="bold", bg=palette.hero,
-              textvariable=self.text("app.heading")).pack(side="left")
-        self.make_header_controls(top, side="right")
-        self.make_language_menu(top).pack(side="right")
-        hills = tk.Canvas(top, width=1, height=round(44 * self.scale), bg=palette.hero,
-                          highlightthickness=0)
-        hills.pack(side="left", fill="both", expand=True, padx=7)
-        hills.bind("<Configure>", lambda _: paint_hills(hills))
-
-    def make_header_controls(self, parent, *, side):
-        palette = self.palette
-        if side == "left":
-            self.collapse_button = text_button(
-                parent, "", self.collapse, bg=palette.hero, fg=palette.ink, padx=3,
-                textvariable=self.text("action.collapse"))
-            self.collapse_button.configure(font=ui_font(parent, 11))
-        else:
-            self.collapse_button = PillButton(parent, "", self.collapse, outside=palette.hero)
-            self.collapse_button.control.configure(textvariable=self.text("action.collapse"))
-            self.collapse_button.pack(side=side, padx=(5, 0))
+        self.collapse_button = text_button(
+            parent, "", self.collapse, bg=palette.hero, fg=palette.ink, padx=3,
+            textvariable=self.text("action.collapse"))
+        self.collapse_button.configure(font=ui_font(parent, 11))
         self.pin_control = tk.Checkbutton(
             parent, textvariable=self.text("action.pin"), variable=self.pinned, command=self.toggle_pin,
-            font=ui_font(parent, 11 if side == "left" else 9),
-            bg=palette.hero, fg=palette.ink, activebackground=palette.hero,
+            font=ui_font(parent, 11), bg=palette.hero, fg=palette.ink, activebackground=palette.hero,
             activeforeground=palette.ink, selectcolor=palette.card, cursor="hand2", padx=0,
             highlightthickness=1, highlightbackground=palette.hero, highlightcolor=palette.accent,
         )
-        if self.orange_theme:
-            rounded_indicator(self.pin_control, self.scale, on_hero=True)
-        self.pin_control.pack(side=side)
-        if side == "left":
-            tk.Frame(parent, bg=palette.hero_border, width=1, height=16).pack(
-                side="left", padx=8)
-            self.collapse_button.pack(side="left")
+        rounded_indicator(self.pin_control, self.scale, on_hero=True)
+        self.pin_control.pack(side="left")
+        tk.Frame(parent, bg=palette.hero_border, width=1, height=16).pack(side="left", padx=8)
+        self.collapse_button.pack(side="left")
 
-    def make_orange_masthead(self):
+    def make_header(self):
+        if WINDOWS:
+            self.root.iconphoto(True, icon(self.root, "note", 32, self.palette.accent))
         palette = self.palette
         hero = tk.Frame(self.root, bg=palette.hero)
         hero.pack(fill="x")
@@ -707,7 +637,7 @@ class StickyWindow:
         title = label(top, "", size=24, weight="bold", bg=palette.hero,
                       textvariable=self.text("app.heading"))
         controls = tk.Frame(top, bg=palette.hero)
-        self.make_header_controls(controls, side="left")
+        self.make_header_controls(controls)
         if WINDOWS:
             tk.Frame(controls, bg=palette.hero_border, width=1, height=16).pack(
                 side="left", padx=8)
@@ -808,71 +738,59 @@ class StickyWindow:
 
     def make_content_panel(self, parent, *, pady=0):
         palette = self.palette
-        if self.orange_theme:
-            shell = RoundedSurface(parent, radius=round(17 * self.scale), antialias=True)
-            shell.pack(fill="x", pady=pady)
-            panel = tk.Frame(shell, bg=palette.card)
-            panel.pack(fill="x", padx=round(14 * self.scale), pady=round(12 * self.scale))
-        else:
-            panel = tk.Frame(parent, bg=palette.paper)
-            panel.pack(fill="x", pady=pady)
+        shell = RoundedSurface(parent, radius=round(17 * self.scale), antialias=True)
+        shell.pack(fill="x", pady=pady)
+        panel = tk.Frame(shell, bg=palette.card)
+        panel.pack(fill="x", padx=round(14 * self.scale), pady=round(12 * self.scale))
         return panel
 
     def make_tasks(self, parent):
         palette = self.palette
         task_panel = self.make_content_panel(parent)
-        self.task_panel = task_panel.master if self.orange_theme else task_panel
+        self.task_panel = task_panel.master
         panel_bg = task_panel["bg"]
         heading = tk.Frame(task_panel, bg=panel_bg)
-        heading.pack(fill="x", pady=(0, round(14 * self.scale) if self.orange_theme else 9))
-        label(heading, "", size=16 if self.orange_theme else 14, weight="bold",
+        heading.pack(fill="x", pady=(0, round(14 * self.scale)))
+        label(heading, "", size=16, weight="bold",
               bg=panel_bg, textvariable=self.text("todo.heading")).pack(side="left")
         self.count = label(heading, "", color=palette.muted,
-                           size=11 if self.orange_theme else 9, bg=panel_bg)
-        if self.orange_theme:
-            tk.Frame(heading, bg=palette.line, width=1, height=16).pack(side="left", padx=9)
-            self.count.pack(side="left")
-            self.task_freeze_switch = capsule_switch(
-                heading, "", self.tasks_fixed, self.toggle_tasks_fixed, self.scale)
-            self.task_freeze_switch.configure(textvariable=self.text("todo.fix"))
-            self.task_freeze_switch.pack(side="right")
-        else:
-            self.count.pack(side="right")
+                           size=11, bg=panel_bg)
+        tk.Frame(heading, bg=palette.line, width=1, height=16).pack(side="left", padx=9)
+        self.count.pack(side="left")
+        self.task_freeze_switch = capsule_switch(
+            heading, "", self.tasks_fixed, self.toggle_tasks_fixed, self.scale)
+        self.task_freeze_switch.configure(textvariable=self.text("todo.fix"))
+        self.task_freeze_switch.pack(side="right")
 
         entry_row = tk.Frame(task_panel, bg=panel_bg)
         entry_row.pack(fill="x", pady=(0, 8))
-        caption_key = "todo.add" if self.orange_theme else "todo.add_full"
-        add_button = PillButton(entry_row, "", self.add_task, primary=True, outside=panel_bg,
-                                radius=round(10 * self.scale) if self.orange_theme else 20,
-                                antialias=self.orange_theme)
-        add_button.control.configure(textvariable=self.text(caption_key))
-        if self.orange_theme:
-            add_button.control.configure(font=ui_font(entry_row, 11, "bold"))
-            add_button.control.pack_configure(padx=round(21 * self.scale),
-                                              pady=round(8 * self.scale))
+        add_button = PillButton(entry_row, "", self.add_task, outside=panel_bg,
+                                radius=round(10 * self.scale))
+        add_button.control.configure(textvariable=self.text("todo.add"))
+        add_button.control.configure(font=ui_font(entry_row, 11, "bold"))
+        add_button.control.pack_configure(padx=round(21 * self.scale),
+                                          pady=round(8 * self.scale))
         add_button.pack(side="right", padx=(round(9 * self.scale), 0))
-        entry_border = palette.hero_border if self.orange_theme else palette.line
+        entry_border = palette.hero_border
         entry_shell = RoundedSurface(entry_row, outside=panel_bg, fill=palette.field,
-                                     radius=round(9 * self.scale) if self.orange_theme else 14,
-                                     border=entry_border, antialias=self.orange_theme)
+                                     radius=round(9 * self.scale),
+                                     border=entry_border, antialias=True)
         entry_shell.pack(side="left", fill="both", expand=True)
-        entry_size = 11 if self.orange_theme else 10
-        self.entry = tk.Entry(entry_shell, font=ui_font(entry_shell, entry_size),
+        self.entry = tk.Entry(entry_shell, font=ui_font(entry_shell, 11),
                               bg=palette.field, fg=palette.ink,
                               relief="flat", bd=0, highlightthickness=0,
                               insertbackground=palette.ink)
         self.entry.pack(fill="both", expand=True, padx=round(13 * self.scale),
-                        pady=round(8 * self.scale) if self.orange_theme else 5)
+                        pady=round(8 * self.scale))
         self.entry.bind("<Return>", lambda _: self.add_task())
         self.entry.bind("<FocusIn>", lambda _: entry_shell.set_border(palette.accent))
         self.entry.bind("<FocusOut>", lambda _: entry_shell.set_border(entry_border))
-        if self.orange_theme:
-            self.entry_hint = label(entry_shell, "", size=11, color=palette.muted,
-                                    bg=palette.field, padx=0, textvariable=self.text("todo.placeholder"))
-            self.entry_hint.bind("<Button-1>", lambda _: self.entry.focus_set())
-            self.entry.bind("<FocusIn>", lambda _: self.entry_hint.place_forget(), add="+")
-            self.entry.bind("<FocusOut>", lambda _: self.show_entry_hint(), add="+")
-            self.show_entry_hint()
+        self.entry_hint = label(entry_shell, "", size=11, color=palette.muted,
+                                bg=palette.field, padx=0, textvariable=self.text("todo.placeholder"))
+        self.entry_hint.bind("<Button-1>", lambda _: self.entry.focus_set())
+        self.entry.bind("<FocusIn>", lambda _: self.entry_hint.place_forget(), add="+")
+        self.entry.bind("<FocusOut>", lambda _: self.show_entry_hint(), add="+")
+        self.show_entry_hint()
         if self.tasks_fixed.get():
             rows = self.fixed_task_rows = ScrollPage(task_panel, bg=panel_bg, padding=(0, 0))
             rows.canvas.configure(height=1)
@@ -949,24 +867,16 @@ class StickyWindow:
 
     def make_threads(self, parent):
         palette = self.palette
-        self.show_project_counts = not self.orange_theme
         thread_panel = self.make_content_panel(parent, pady=(round(15 * self.scale), 0))
         panel_bg = thread_panel["bg"]
-        if not self.orange_theme:
-            tk.Frame(thread_panel, height=1, bg=palette.line).pack(fill="x", pady=(0, 12))
         heading = tk.Frame(thread_panel, bg=panel_bg)
-        heading.pack(fill="x", pady=(0, round(12 * self.scale) if self.orange_theme else 5))
-        label(heading, "", size=16 if self.orange_theme else 14, weight="bold",
+        heading.pack(fill="x", pady=(0, round(12 * self.scale)))
+        label(heading, "", size=16, weight="bold",
               bg=panel_bg, textvariable=self.text("projects.heading")).pack(side="left")
-        if self.orange_theme:
-            refresh = icon(heading, "refresh", round(18 * self.scale), palette.muted)
-            text_button(heading, "", self.refresh_threads, bg=panel_bg, fg=palette.muted,
-                        image=refresh, compound="left",
-                        textvariable=self.text("action.refresh"), padx=4).pack(side="right")
-        else:
-            refresh_button = PillButton(heading, "", self.refresh_threads)
-            refresh_button.control.configure(textvariable=self.text("action.refresh"))
-            refresh_button.pack(side="right")
+        refresh = icon(heading, "refresh", round(18 * self.scale), palette.muted)
+        text_button(heading, "", self.refresh_threads, bg=panel_bg, fg=palette.muted,
+                    image=refresh, compound="left",
+                    textvariable=self.text("action.refresh"), padx=4).pack(side="right")
         summary = label(thread_panel, "", textvariable=self.thread_feedback,
                         color=palette.muted, size=9, bg=panel_bg)
         summary.pack(fill="x", pady=(0, 10))
@@ -974,10 +884,9 @@ class StickyWindow:
         self.thread_list = tk.Frame(thread_panel, bg=panel_bg)
         self.thread_list.pack(fill="x")
         self.thread_list.bind("<Configure>", lambda event: self.layout_project_cards(event.width))
-        if self.orange_theme:
-            self.thread_feedback.trace_add("write", lambda *_: summary.pack(
-                fill="x", pady=(0, 10), before=self.thread_list) if self.thread_feedback.get()
-                else summary.pack_forget())
+        self.thread_feedback.trace_add("write", lambda *_: summary.pack(
+            fill="x", pady=(0, 10), before=self.thread_list) if self.thread_feedback.get()
+            else summary.pack_forget())
 
     def close(self):
         self.dismiss_project()
@@ -986,7 +895,7 @@ class StickyWindow:
 
     def toggle_pin(self):
         self.root.attributes("-topmost", self.pinned.get())
-        if WINDOWS and self.orange_theme:
+        if WINDOWS:
             self.rounded_window.refresh()
 
     def on_unmap(self, event):
@@ -1046,38 +955,31 @@ class StickyWindow:
 
     def show_task(self, task):
         palette = self.palette
-        if self.orange_theme:
-            if self.task_list.winfo_children():
-                tk.Frame(self.task_list, bg=palette.line, height=1).pack(fill="x")
-            surface = tk.Frame(self.task_list, bg=palette.card)
-            surface.pack(fill="x")
-        else:
-            surface = RoundedSurface(self.task_list, radius=13)
-            surface.pack(fill="x", pady=(0, 5))
+        if self.task_list.winfo_children():
+            tk.Frame(self.task_list, bg=palette.line, height=1).pack(fill="x")
+        surface = tk.Frame(self.task_list, bg=palette.card)
+        surface.pack(fill="x")
         row = tk.Frame(surface, bg=palette.card)
-        row.pack(fill="x", padx=0 if self.orange_theme else 9,
-                 pady=round(9 * self.scale) if self.orange_theme else 4)
+        row.pack(fill="x", pady=round(9 * self.scale))
         value = tk.BooleanVar(row, value=task["done"])
         checkbox = tk.Checkbutton(
             row, text=task["text"], variable=value,
             command=lambda: self.change_task(task, done=value.get()),
-            font=ui_font(row, 11 if self.orange_theme else 10,
+            font=ui_font(row, 11,
                          "overstrike" if task["done"] else "normal"),
             bg=palette.card, fg=palette.muted if task["done"] else palette.ink,
             activebackground=palette.card, selectcolor=palette.field, anchor="w", justify="left",
             wraplength=235, cursor="hand2",
             highlightthickness=1, highlightbackground=palette.card, highlightcolor=palette.accent)
         checkbox.value = value
-        text_gap = round(5 * self.scale) if self.orange_theme else 0
-        if self.orange_theme:
-            rounded_indicator(checkbox, self.scale, text_gap=text_gap)
+        text_gap = round(5 * self.scale)
+        rounded_indicator(checkbox, self.scale, text_gap=text_gap)
         text_button(row, "", lambda: self.remove_task(task), bg=palette.card, fg=palette.muted,
                     textvariable=self.text("todo.delete"), padx=4).pack(side="right")
-        if self.orange_theme:
-            tk.Frame(row, bg=palette.line, width=1, height=14).pack(side="right", padx=4)
+        tk.Frame(row, bg=palette.line, width=1, height=14).pack(side="right", padx=4)
         text_button(row, "", lambda: self.edit_task(task), bg=palette.card,
                     textvariable=self.text("todo.edit"),
-                    fg=palette.muted if self.orange_theme else palette.accent, padx=4).pack(
+                    fg=palette.muted, padx=4).pack(
                         side="right")
         checkbox.pack(side="left", fill="x", expand=True)
         wrap(checkbox, 27 + text_gap)
@@ -1091,7 +993,7 @@ class StickyWindow:
         except (OSError, sqlite3.Error):
             self.set_task_feedback("todo.write_error")
             return False
-        self.set_task_feedback(None if self.orange_theme else "todo.saved")
+        self.set_task_feedback(None)
         self.refresh_tasks()
         return True
 
@@ -1146,7 +1048,7 @@ class StickyWindow:
         self.update_unread_alert(threads)
         self.threads = threads
         if threads == self.rendered_threads:
-            self.show_thread_summary()
+            self.set_thread_feedback(None)
         elif self.popup is None:
             self.render_projects()
 
@@ -1162,18 +1064,7 @@ class StickyWindow:
 
     def set_thread_feedback(self, key):
         self.thread_feedback_key = key
-        self.thread_feedback.set(self.tr(key))
-
-    def show_thread_summary(self):
-        self.thread_feedback_key = None
-        if not self.show_project_counts:
-            self.thread_feedback.set("")
-            return
-        counts = (self.tr.count("projects.count", len(self.project_cards)),
-                  self.tr.count("sessions.count", len(self.rendered_threads)))
-        summary = " · ".join(counts)
-        self.thread_feedback.set(f"{summary} · {self.tr('projects.hover')}"
-                                 if self.rendered_threads else summary)
+        self.thread_feedback.set(self.tr(key) if key else "")
 
     def render_projects(self):
         if self.threads == self.rendered_threads:
@@ -1196,16 +1087,13 @@ class StickyWindow:
                     if group["subtitle"] else "")
             self.make_project_card(group, hint)
         self.layout_project_cards(self.thread_list.winfo_width())
-        self.show_thread_summary()
+        self.set_thread_feedback(None)
 
     def make_project_card(self, group, hint):
         status = group["status"]
-        card_options = {}
-        if status in self.project_backgrounds:
-            card_options["fills"] = self.project_backgrounds[status]
         caption = self.tr(f"project.{status}", count=group.get(status))
         card = ProjectCard(self.thread_list, group["title"], hint, status, caption,
-                           self.scale, **card_options)
+                           self.scale)
         for sequence in ("<Return>", "<space>"):
             card.bind(sequence, lambda _: self.open_project_with_keyboard(card, group))
         card.bind("<Enter>", lambda _: self.schedule_project_hover(card, group))
@@ -1216,10 +1104,9 @@ class StickyWindow:
         cards = self.project_cards.values()
         if not cards:
             return
-        height = next(iter(cards)).compact_height() if self.orange_theme else None
-        layout_tiles(cards, width, self.scale, height=height,
-                     gap=9 if self.orange_theme else 11,
-                     target=98 if self.orange_theme else 104, maximum=145, column_limit=6)
+        height = next(iter(cards)).compact_height()
+        layout_tiles(cards, width, self.scale, height=height, gap=9,
+                     target=98, maximum=145, column_limit=6)
 
     def schedule_project_hover(self, card, group):
         if self.pending_hover is not None:
@@ -1314,19 +1201,12 @@ class StickyWindow:
 
 def main():
     parser = argparse.ArgumentParser()
-    mode = parser.add_mutually_exclusive_group()
-    mode.add_argument("--background", action="store_true")
-    mode.add_argument("--preview", action="store_true")
-    mode.add_argument("--project-color-demo", choices=PROJECT_COLOR_DEMOS)
+    parser.add_argument("--background", action="store_true")
     options = parser.parse_args()
-    if options.project_color_demo:
-        name = f"project-color-demo-{options.project_color_demo}"
-    else:
-        name = "hover-preview" if options.preview else "window"
-    instance = Instance(name)
+    instance = Instance("window")
     activation = None
     try:
-        activation = Event(f"{name}-activate")
+        activation = Event("window-activate")
         if not instance.primary:
             if not options.background:
                 activation.signal()
@@ -1336,8 +1216,7 @@ def main():
         root = tk.Tk()
         if options.background:
             root.withdraw()
-        window = StickyWindow(root, preview=options.preview,
-                              project_color_demo=options.project_color_demo)
+        window = StickyWindow(root)
 
         def show_window():
             window.restore()

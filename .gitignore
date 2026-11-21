@@ -3,4 +3,5 @@ __pycache__/
 *.sqlite-*
 .codex-global-state.json
 /dist/
+/archive/legacy-previews.zip
 /.venv/

@@ -40,7 +40,7 @@ Codex 便签是一个 Windows 桌面小窗，用来集中查看本机 Codex 各�
 | --- | --- |
 | [Open-Codex-Sticky-Notes-Orange-Demo.cmd](Open-Codex-Sticky-Notes-Orange-Demo.cmd) | 打开最新确认保存的橙色 Demo。 |
 | [Open-Codex-Sticky-Notes.cmd](Open-Codex-Sticky-Notes.cmd) | 打开普通便签。 |
-| [Open-Codex-Sticky-Notes-Preview.cmd](Open-Codex-Sticky-Notes-Preview.cmd) | 打开独立的鼠尾草绿方块预览。 |
+| `Open-Codex-Sticky-Notes-Preview.cmd` | 当时用于打开独立的鼠尾草绿方块预览，入口已归档。 |
 
 项目使用 Python 3.11 或更高版本、Tkinter 和 Windows API。窗口、方块布局和悬停交互在 `plugins/codex-sticky-notes/window.py`，外观在 `appearance.py`、`palette.py` 和 `note_icons.py`，橙色窗口的原生边框处理在 `native_frame.py`。自动启动和单窗口逻辑分别在 `startup.py` 和 `lifecycle.py`。
 
