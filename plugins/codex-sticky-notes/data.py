@@ -17,14 +17,17 @@ if sys.platform == "darwin":
     APP_HOME = Path.home() / "Library" / "Application Support" / "CodexStickyNotes"
 else:
     APP_HOME = Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "CodexStickyNotes"
-STATUS_LABELS = {
-    "running": "有新活动",
-    "stale": "状态待确认",
-    "completed": "本轮完成",
-    "interrupted": "本轮中断",
-    "failed": "本轮失败",
-    "unknown": "状态未知",
-}
+THREAD_STATUSES = frozenset({"running", "stale", "completed", "interrupted", "failed", "unknown"})
+
+
+class TaskInputError(ValueError):
+    def __init__(self, message_key):
+        super().__init__(message_key)
+        self.message_key = message_key
+
+
+class TaskNotFoundError(KeyError):
+    message_key = "error.todo_not_found"
 
 
 class TaskStore:
@@ -52,7 +55,7 @@ class TaskStore:
     @staticmethod
     def _text(value):
         if not isinstance(value, str) or not value.strip() or len(value.strip()) > 1000:
-            raise ValueError("请输入 1 至 1000 个字符。")
+            raise TaskInputError("error.todo_text_length")
         return value.strip()
 
     def list(self):
@@ -72,9 +75,9 @@ class TaskStore:
         if text is not None:
             text = self._text(text)
         if done is not None and not isinstance(done, bool):
-            raise ValueError("完成状态必须为 true 或 false。")
+            raise TaskInputError("error.todo_done")
         if text is None and done is None:
-            raise ValueError("请提供待办内容或完成状态。")
+            raise TaskInputError("error.todo_empty_update")
         with closing(self._connect()) as db, db:
             row = db.execute(
                 """UPDATE tasks SET text = coalesce(?, text), done = coalesce(?, done)
@@ -82,13 +85,13 @@ class TaskStore:
                 (text, done, task_id),
             ).fetchone()
             if row is None:
-                raise KeyError("找不到这条待办。")
+                raise TaskNotFoundError(task_id)
             return self._task(row)
 
     def delete(self, task_id):
         with closing(self._connect()) as db, db:
             if not db.execute("DELETE FROM tasks WHERE id = ?", (task_id,)).rowcount:
-                raise KeyError("找不到这条待办。")
+                raise TaskNotFoundError(task_id)
 
 
 def _read_only(file):
@@ -256,13 +259,16 @@ def is_finished_and_read(thread):
             and thread.get("unread") is False)
 
 
-def group_threads(threads):
+def group_threads(threads, *, project_label=None):
     groups = {}
     for thread in sorted(threads, key=lambda item: (-item["updated"], item["id"])):
         key = thread["project_key"]
         if key not in groups:
+            name = thread["project"]
+            if project_label is not None:
+                name = project_label(key, name)
             groups[key] = {
-                "key": key, "title": thread["project"], "subtitle": thread["project_path"],
+                "key": key, "title": name, "subtitle": thread["project_path"],
                 "threads": [],
             }
         groups[key]["threads"].append(thread)
@@ -311,10 +317,12 @@ def _describe_thread(row, history, now):
 
     if status == "inProgress":
         status = "running" if now - updated <= 5 * 60 * 1000 else "stale"
+    title = row["name"] or row["title"]
     return {
         "id": row["id"],
-        "title": row["name"] or row["title"] or "未命名会话",
+        "title": title or "未命名会话",
+        "untitled": not title,
         "updated": updated,
-        "status": status if status in STATUS_LABELS else "unknown",
+        "status": status if status in THREAD_STATUSES else "unknown",
         "progress": progress,
     }

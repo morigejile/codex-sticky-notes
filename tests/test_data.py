@@ -35,6 +35,21 @@ class StickyNotesTests(unittest.TestCase):
         with self.assertRaises(KeyError):
             store.update(task["id"], done=True)
 
+    def test_task_errors_provide_keys_for_translation(self):
+        store = TaskStore(self.root / "tasks.sqlite")
+        task = store.add("检查构建")
+        for expected_key, error_type, operation in (
+            ("error.todo_text_length", ValueError, lambda: store.add("  ")),
+            ("error.todo_done", ValueError, lambda: store.update(task["id"], done=1)),
+            ("error.todo_empty_update", ValueError, lambda: store.update(task["id"])),
+            ("error.todo_not_found", KeyError, lambda: store.update("missing", done=True)),
+            ("error.todo_not_found", KeyError, lambda: store.delete("missing")),
+        ):
+            with self.subTest(key=expected_key, operation=operation):
+                with self.assertRaises(error_type) as raised:
+                    operation()
+                self.assertEqual(getattr(raised.exception, "message_key", None), expected_key)
+
     def test_latest_turn_status_and_progress_exclude_hidden_threads_and_reasoning(self):
         now = int(time.time() * 1000)
         with closing(sqlite3.connect(self.root / "state_5.sqlite")) as db, db:
@@ -44,6 +59,8 @@ class StickyNotesTests(unittest.TestCase):
             db.executemany("INSERT INTO threads VALUES (?, ?, ?, ?, ?, ?, ?, ?)", [
                 ("open", "手动命名", "原始标题", "D:/项目", now // 1000, now, "vscode", 0),
                 ("stale", None, "旧会话", "", (now - 900000) // 1000, now - 900000, "cli", 0),
+                ("named", "未命名会话", None, "", 0, 0, "vscode", 0),
+                ("untitled", None, "", "", 0, 0, "vscode", 0),
                 ("archived", None, "归档", "", now // 1000, now, "vscode", 1),
                 ("agent", None, "子代理", "", now // 1000, now, '{"subagent":{}}', 0),
             ])
@@ -62,11 +79,14 @@ class StickyNotesTests(unittest.TestCase):
                 ("open", "b", "reasoning", 3, json.dumps({"text": "隐藏内容"}), now),
             ])
         threads = read_threads(self.root)
-        self.assertEqual(["open", "stale"], [thread["id"] for thread in threads])
+        self.assertEqual(["open", "stale", "named", "untitled"], [thread["id"] for thread in threads])
         self.assertEqual(("手动命名", "running", "正在检查安装包"), (
             threads[0]["title"], threads[0]["status"], threads[0]["progress"]
         ))
         self.assertEqual("stale", threads[1]["status"])
+        self.assertEqual("未命名会话", threads[2]["title"])
+        self.assertFalse(threads[2].get("untitled", True))
+        self.assertTrue(threads[3].get("untitled", False))
 
     def test_missing_history_does_not_create_codex_files(self):
         with self.assertRaises(FileNotFoundError):
@@ -193,6 +213,18 @@ class StickyNotesTests(unittest.TestCase):
         self.assertEqual(2, len(groups))
         self.assertEqual([0, 1], [group["unread"] for group in groups])
         self.assertNotEqual(groups[0]["subtitle"], groups[1]["subtitle"])
+
+    def test_project_subtitle_accounts_for_localized_name_collision(self):
+        thread = {"id": "project", "updated": 2, "project_key": "cwd:D:/Unassigned",
+                  "project": "Unassigned", "project_path": "D:/Unassigned",
+                  "status": "unknown", "unread_completed": None}
+        threads = [thread, dict(thread, id="loose", updated=1, project_key="unassigned",
+                                project="未分组", project_path="")]
+        groups = group_threads(threads, project_label=lambda key, name: (
+            "Unassigned" if key == "unassigned" else name))
+        self.assertEqual(["cwd:D:/Unassigned", "unassigned"], [group["key"] for group in groups])
+        self.assertEqual(["Unassigned", "Unassigned"], [group["title"] for group in groups])
+        self.assertEqual(["D:/Unassigned", ""], [group["subtitle"] for group in groups])
 
 
 if __name__ == "__main__":

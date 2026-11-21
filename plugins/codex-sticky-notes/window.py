@@ -17,7 +17,11 @@ from appearance import (
     PillButton, ProjectCard, RoundedSurface, SessionCard, capsule_switch, label, note_mark, paint_hills,
     paint_smooth_rect, rounded_indicator, rounded_rect, text_button, two_line_text, ui_font, wrap,
 )
-from data import TaskStore, group_threads, project_path_module, read_project_threads
+from data import (
+    APP_HOME, TaskInputError, TaskNotFoundError, TaskStore,
+    group_threads, project_path_module, read_project_threads,
+)
+from i18n import LANGUAGE_CHOICES, Translator, load_language, project_name, save_language, translator_for
 from launch import open_thread_link
 from note_art import load_note_art
 from note_icons import icon
@@ -107,19 +111,23 @@ def layout_tiles(cards, width, scale, *, gap, target, maximum, column_limit, hei
 
 
 class FloatingNote(tk.Toplevel):
+    UNREAD_ALERT_MS = 60 * 60 * 1000
+
     def __init__(self, root, restore):
         super().__init__(root)
+        self.notes_tr = translator_for(root)
         self.notes_palette = self.palette = palette_for(root)
         self.restore = restore
         self.press = None
         self.dragged = False
         self.alert_timer = None
+        self.alert_expiry = None
         self.pin_highlight = False
         self.withdraw()
         self.overrideredirect(True)
         self.attributes("-topmost", True)
         self.attributes("-alpha", 0.67)
-        self.title("打开 Codex 便签")
+        self.title(self.notes_tr("app.open"))
         self.native_corners = WINDOWS and self.palette.precise_corners
         outside = (self.palette.floating if self.native_corners
                    else popup_background(self, self.palette.floating))
@@ -185,16 +193,24 @@ class FloatingNote(tk.Toplevel):
         self.highlight_pin(not self.pin_highlight)
         self.alert_timer = self.after(500, self.flash_pin)
 
-    def set_unread_alert(self, enabled):
-        if enabled and self.alert_timer is None:
+    def start_unread_alert(self):
+        if self.alert_expiry is not None:
+            self.after_cancel(self.alert_expiry)
+        self.alert_expiry = self.after(self.UNREAD_ALERT_MS, self.stop_unread_alert)
+        if self.alert_timer is None:
             self.flash_pin()
-        elif not enabled and self.alert_timer is not None:
+
+    def stop_unread_alert(self):
+        if self.alert_expiry is not None:
+            self.after_cancel(self.alert_expiry)
+            self.alert_expiry = None
+        if self.alert_timer is not None:
             self.after_cancel(self.alert_timer)
             self.alert_timer = None
             self.highlight_pin(False)
 
     def destroy(self):
-        self.set_unread_alert(False)
+        self.stop_unread_alert()
         super().destroy()
 
     def show_tooltip(self):
@@ -209,7 +225,7 @@ class FloatingNote(tk.Toplevel):
             shell = RoundedSurface(self.tooltip, outside=outside,
                                    radius=round(15 * self.scale))
             shell.pack(fill="both", expand=True)
-            label(shell, "打开便签", size=10, weight="bold", bg=self.palette.card).pack(
+            label(shell, self.notes_tr("app.open"), size=10, weight="bold", bg=self.palette.card).pack(
                 padx=round(12 * self.scale), pady=round(6 * self.scale))
             self.tooltip.update_idletasks()
         width, height = self.tooltip.winfo_reqwidth(), self.tooltip.winfo_reqheight()
@@ -331,6 +347,7 @@ class ProjectPopup(tk.Toplevel):
 
     def __init__(self, root, anchor, group, scale, open_thread):
         super().__init__(root)
+        self.notes_tr = translator_for(root)
         self.notes_palette = palette = palette_for(root)
         self.withdraw()
         self.overrideredirect(True)
@@ -360,7 +377,7 @@ class ProjectPopup(tk.Toplevel):
         title_row.pack(fill="x")
         status_color = (palette.muted if palette.precise_corners
                         else palette.project_colors[group["status"]][3])
-        self.count = label(title_row, f"{len(group['threads'])} 个会话", size=9,
+        self.count = label(title_row, self.notes_tr.count("sessions.count", len(group["threads"])), size=9,
                            color=status_color, bg=palette.card)
         self.count.pack(side="right", padx=(8, 0))
         self.title_label = label(title_row, "", weight="bold", size=heading_size, bg=palette.card)
@@ -464,13 +481,20 @@ class ProjectPopup(tk.Toplevel):
 
 class StickyWindow:
     def __init__(self, root, store=None, thread_reader=read_project_threads, *,
-                 preview=False, orange_demo=True, project_color_demo=None):
+                 preview=False, orange_demo=True, project_color_demo=None, settings_path=None):
         self.root = root
+        self.settings_path = APP_HOME / "settings.json" if settings_path is None else settings_path
+        self.language_preference = load_language(self.settings_path)
+        self.language_choice = tk.StringVar(root, value=self.language_preference)
+        self.tr = root.notes_tr = Translator(self.language_preference)
+        self.text_variables = {}
+        self.reflow_masthead = None
         orange_theme = (orange_demo and not preview) or project_color_demo is not None
-        title_suffix, self.project_backgrounds = (
-            PROJECT_COLOR_DEMOS[project_color_demo] if project_color_demo is not None
-            else ("方块预览" if preview else "", {})
-        )
+        self.title_suffix_key = "app.preview" if preview else None
+        self.project_backgrounds = {}
+        if project_color_demo is not None:
+            self.title_suffix_key = f"app.demo.{project_color_demo}"
+            _, self.project_backgrounds = PROJECT_COLOR_DEMOS[project_color_demo]
         self.orange_theme = orange_theme
         if orange_theme:
             root.notes_palette = ORANGE_MAIN if project_color_demo is None else ORANGE
@@ -484,7 +508,6 @@ class StickyWindow:
         self.tasks = None
         self.threads = None
         self.unread_threads = None
-        self.alert_threads = set()
         self.rendered_threads = None
         self.project_cards = {}
         self.popup = None
@@ -498,13 +521,15 @@ class StickyWindow:
         self.header_drag = None
         self.collapsed = False
         self.task_feedback = tk.StringVar()
+        self.task_feedback_key = None
         self.tasks_fixed = tk.BooleanVar(value=False)
         self.fixed_task_host = None
         self.fixed_task_rows = None
-        self.thread_feedback = tk.StringVar(value="正在读取本机会话…")
+        self.thread_feedback_key = "sessions.loading"
+        self.thread_feedback = tk.StringVar(value=self.tr(self.thread_feedback_key))
         self.show_project_counts = True
         self.pinned = tk.BooleanVar(value=False)
-        root.title(f"Codex 便签 · {title_suffix}" if title_suffix else "Codex 便签")
+        self.update_title()
         self.scale = root.winfo_fpixels("1i") / 96
         left, top, right, bottom = work_area(root)
         width = min(round(510 * self.scale), right - left - 55)
@@ -555,6 +580,62 @@ class StickyWindow:
         self.refresh_threads()
         root.after(15000, self.tick)
 
+    def text(self, key):
+        if key not in self.text_variables:
+            self.text_variables[key] = tk.StringVar(self.root, value=self.tr(key))
+        return self.text_variables[key]
+
+    def update_title(self):
+        title = self.tr("app.title")
+        if self.title_suffix_key:
+            title = f"{title} · {self.tr(self.title_suffix_key)}"
+        self.root.title(title)
+
+    def make_language_menu(self, parent):
+        palette = self.palette
+        button = tk.Menubutton(
+            parent, textvariable=self.text("language.menu"), font=ui_font(parent, 10),
+            bg=palette.hero, fg=palette.ink, activebackground=palette.hero_border,
+            activeforeground=palette.ink, relief="flat", bd=0, padx=5, takefocus=True,
+        )
+        self.language_menu = menu = tk.Menu(button, tearoff=False)
+        for choice, name in zip(LANGUAGE_CHOICES, (self.tr("language.system"), "简体中文", "English")):
+            menu.add_radiobutton(label=name, value=choice, variable=self.language_choice,
+                                 command=self.change_language)
+        button.configure(menu=menu)
+        return button
+
+    def change_language(self):
+        choice = self.language_choice.get()
+        if choice != self.language_preference:
+            try:
+                save_language(self.settings_path, choice)
+            except OSError:
+                self.language_choice.set(self.language_preference)
+                messagebox.showerror(self.tr("app.title"), self.tr("language.save_error"), parent=self.root)
+                return
+        self.language_preference = choice
+        translator = Translator(choice)
+        if translator.language == self.tr.language:
+            return
+        self.dismiss_project()
+        self.tr = self.root.notes_tr = translator
+        for key, variable in self.text_variables.items():
+            variable.set(self.tr(key))
+        self.language_menu.entryconfigure(0, label=self.tr("language.system"))
+        self.update_title()
+        self.render_tasks(self.tasks or [])
+        self.set_task_feedback(self.task_feedback_key)
+        feedback_key = self.thread_feedback_key
+        if self.threads is not None:
+            self.rendered_threads = None
+            self.render_projects()
+        if feedback_key:
+            self.set_thread_feedback(feedback_key)
+        if self.reflow_masthead is not None:
+            self.root.update_idletasks()
+            self.reflow_masthead()
+
     def make_header(self):
         palette = self.palette
         if self.orange_theme:
@@ -581,8 +662,10 @@ class StickyWindow:
         rounded_rect(logo, 1, 1, size - 2, size - 2, size * 0.3,
                      fill=palette.card, outline=palette.hero_border)
         note_mark(logo, 0, 1, size / 60, palette.accent)
-        label(top, "Codex 便签", size=17, weight="bold", bg=palette.hero).pack(side="left")
+        label(top, "", size=17, weight="bold", bg=palette.hero,
+              textvariable=self.text("app.heading")).pack(side="left")
         self.make_header_controls(top, side="right")
+        self.make_language_menu(top).pack(side="right")
         hills = tk.Canvas(top, width=1, height=round(44 * self.scale), bg=palette.hero,
                           highlightthickness=0)
         hills.pack(side="left", fill="both", expand=True, padx=7)
@@ -592,13 +675,15 @@ class StickyWindow:
         palette = self.palette
         if side == "left":
             self.collapse_button = text_button(
-                parent, "收起", self.collapse, bg=palette.hero, fg=palette.ink, padx=3)
+                parent, "", self.collapse, bg=palette.hero, fg=palette.ink, padx=3,
+                textvariable=self.text("action.collapse"))
             self.collapse_button.configure(font=ui_font(parent, 11))
         else:
-            self.collapse_button = PillButton(parent, "收起", self.collapse, outside=palette.hero)
+            self.collapse_button = PillButton(parent, "", self.collapse, outside=palette.hero)
+            self.collapse_button.control.configure(textvariable=self.text("action.collapse"))
             self.collapse_button.pack(side=side, padx=(5, 0))
         self.pin_control = tk.Checkbutton(
-            parent, text="置顶", variable=self.pinned, command=self.toggle_pin,
+            parent, textvariable=self.text("action.pin"), variable=self.pinned, command=self.toggle_pin,
             font=ui_font(parent, 11 if side == "left" else 9),
             bg=palette.hero, fg=palette.ink, activebackground=palette.hero,
             activeforeground=palette.ink, selectcolor=palette.card, cursor="hand2", padx=0,
@@ -619,7 +704,8 @@ class StickyWindow:
         top = tk.Frame(hero, bg=palette.hero)
         top.pack(fill="x", padx=round(24 * self.scale), pady=round(5 * self.scale))
         top.columnconfigure(2, weight=1)
-        title = label(top, "Codex 便签", size=24, weight="bold", bg=palette.hero)
+        title = label(top, "", size=24, weight="bold", bg=palette.hero,
+                      textvariable=self.text("app.heading"))
         controls = tk.Frame(top, bg=palette.hero)
         self.make_header_controls(controls, side="left")
         if WINDOWS:
@@ -627,11 +713,13 @@ class StickyWindow:
                 side="left", padx=8)
             close_image = icon(controls, "close", round(16 * self.scale), palette.ink)
             close_button = text_button(
-                controls, "关闭", self.close, bg=palette.hero, fg=palette.ink,
+                controls, "", self.close, bg=palette.hero, fg=palette.ink,
                 hover_bg=palette.hero_border, image=close_image,
+                textvariable=self.text("action.close"),
                 padx=round(6 * self.scale), pady=round(6 * self.scale))
             close_button.bind("<Return>", lambda _: close_button.invoke())
             close_button.pack(side="left")
+        self.make_language_menu(controls).pack(side="left", padx=(4, 0))
 
         size = round(64 * self.scale)
         art = tk.Canvas(top, width=size + 12, height=size, bg=palette.hero, highlightthickness=0)
@@ -648,19 +736,19 @@ class StickyWindow:
         controls.grid(row=0, column=1, sticky="w", padx=(gap, 0))
         art.grid(row=0, column=2, sticky="e")
 
-        def arrange_masthead(event):
+        def arrange_masthead(event=None):
             nonlocal stacked
             single_row_width = sum(widget.winfo_reqwidth() for widget in (title, controls, art))
-            narrow = event.width < single_row_width + gap
+            narrow = (event.width if event else top.winfo_width()) < single_row_width + gap
             if narrow == stacked:
                 return
             stacked = narrow
             title.grid_configure(columnspan=2 if stacked else 1)
             controls.grid_configure(row=1 if stacked else 0, column=0 if stacked else 1,
-                                    columnspan=2 if stacked else 1,
+                                    columnspan=3 if stacked else 1,
                                     padx=(0 if stacked else gap, 0))
-            art.grid_configure(rowspan=2 if stacked else 1)
 
+        self.reflow_masthead = arrange_masthead
         top.bind("<Configure>", arrange_masthead)
         if WINDOWS:
             for area in (hero, top, title, controls, art):
@@ -737,25 +825,27 @@ class StickyWindow:
         panel_bg = task_panel["bg"]
         heading = tk.Frame(task_panel, bg=panel_bg)
         heading.pack(fill="x", pady=(0, round(14 * self.scale) if self.orange_theme else 9))
-        label(heading, "待办", size=16 if self.orange_theme else 14, weight="bold",
-              bg=panel_bg).pack(side="left")
+        label(heading, "", size=16 if self.orange_theme else 14, weight="bold",
+              bg=panel_bg, textvariable=self.text("todo.heading")).pack(side="left")
         self.count = label(heading, "", color=palette.muted,
                            size=11 if self.orange_theme else 9, bg=panel_bg)
         if self.orange_theme:
             tk.Frame(heading, bg=palette.line, width=1, height=16).pack(side="left", padx=9)
             self.count.pack(side="left")
             self.task_freeze_switch = capsule_switch(
-                heading, "固定待办", self.tasks_fixed, self.toggle_tasks_fixed, self.scale)
+                heading, "", self.tasks_fixed, self.toggle_tasks_fixed, self.scale)
+            self.task_freeze_switch.configure(textvariable=self.text("todo.fix"))
             self.task_freeze_switch.pack(side="right")
         else:
             self.count.pack(side="right")
 
         entry_row = tk.Frame(task_panel, bg=panel_bg)
         entry_row.pack(fill="x", pady=(0, 8))
-        caption = "添加" if self.orange_theme else "添加待办"
-        add_button = PillButton(entry_row, caption, self.add_task, primary=True, outside=panel_bg,
+        caption_key = "todo.add" if self.orange_theme else "todo.add_full"
+        add_button = PillButton(entry_row, "", self.add_task, primary=True, outside=panel_bg,
                                 radius=round(10 * self.scale) if self.orange_theme else 20,
                                 antialias=self.orange_theme)
+        add_button.control.configure(textvariable=self.text(caption_key))
         if self.orange_theme:
             add_button.control.configure(font=ui_font(entry_row, 11, "bold"))
             add_button.control.pack_configure(padx=round(21 * self.scale),
@@ -777,8 +867,8 @@ class StickyWindow:
         self.entry.bind("<FocusIn>", lambda _: entry_shell.set_border(palette.accent))
         self.entry.bind("<FocusOut>", lambda _: entry_shell.set_border(entry_border))
         if self.orange_theme:
-            self.entry_hint = label(entry_shell, "记一条待办", size=11, color=palette.muted,
-                                    bg=palette.field, padx=0)
+            self.entry_hint = label(entry_shell, "", size=11, color=palette.muted,
+                                    bg=palette.field, padx=0, textvariable=self.text("todo.placeholder"))
             self.entry_hint.bind("<Button-1>", lambda _: self.entry.focus_set())
             self.entry.bind("<FocusIn>", lambda _: self.entry_hint.place_forget(), add="+")
             self.entry.bind("<FocusOut>", lambda _: self.show_entry_hint(), add="+")
@@ -866,14 +956,17 @@ class StickyWindow:
             tk.Frame(thread_panel, height=1, bg=palette.line).pack(fill="x", pady=(0, 12))
         heading = tk.Frame(thread_panel, bg=panel_bg)
         heading.pack(fill="x", pady=(0, round(12 * self.scale) if self.orange_theme else 5))
-        label(heading, "项目会话", size=16 if self.orange_theme else 14, weight="bold",
-              bg=panel_bg).pack(side="left")
+        label(heading, "", size=16 if self.orange_theme else 14, weight="bold",
+              bg=panel_bg, textvariable=self.text("projects.heading")).pack(side="left")
         if self.orange_theme:
             refresh = icon(heading, "refresh", round(18 * self.scale), palette.muted)
-            text_button(heading, " 刷新", self.refresh_threads, bg=panel_bg, fg=palette.muted,
-                        image=refresh, compound="left").pack(side="right")
+            text_button(heading, "", self.refresh_threads, bg=panel_bg, fg=palette.muted,
+                        image=refresh, compound="left",
+                        textvariable=self.text("action.refresh"), padx=4).pack(side="right")
         else:
-            PillButton(heading, "刷新", self.refresh_threads).pack(side="right")
+            refresh_button = PillButton(heading, "", self.refresh_threads)
+            refresh_button.control.configure(textvariable=self.text("action.refresh"))
+            refresh_button.pack(side="right")
         summary = label(thread_panel, "", textvariable=self.thread_feedback,
                         color=palette.muted, size=9, bg=panel_bg)
         summary.pack(fill="x", pady=(0, 10))
@@ -920,7 +1013,6 @@ class StickyWindow:
         self.floating_position = self.floating.winfo_rootx(), self.floating.winfo_rooty()
         self.floating.destroy()
         self.floating = None
-        self.alert_threads.clear()
         self.collapsed = False
         self.root.deiconify()
         self.root.lift()
@@ -932,7 +1024,7 @@ class StickyWindow:
         try:
             tasks = self.store.list()
         except (OSError, sqlite3.Error):
-            self.task_feedback.set("暂时无法读取本地待办。")
+            self.set_task_feedback("todo.read_error")
             return
         if tasks == self.tasks:
             return
@@ -942,11 +1034,12 @@ class StickyWindow:
     def render_tasks(self, tasks):
         for child in self.task_list.winfo_children():
             child.destroy()
-        self.count.configure(text=f"{sum(not task['done'] for task in tasks)} 项未完成")
+        self.count.configure(text=self.tr("todo.left", count=sum(not task["done"] for task in tasks)))
         if not tasks:
             empty = RoundedSurface(self.task_list, outside=self.task_list["bg"], radius=13)
             empty.pack(fill="x", pady=(0, 5))
-            label(empty, "还没有待办", bg=self.palette.card, color=self.palette.muted).pack(
+            label(empty, "", bg=self.palette.card, color=self.palette.muted,
+                  textvariable=self.text("todo.empty")).pack(
                 fill="x", padx=12, pady=8)
         for task in tasks:
             self.show_task(task)
@@ -978,11 +1071,12 @@ class StickyWindow:
         text_gap = round(5 * self.scale) if self.orange_theme else 0
         if self.orange_theme:
             rounded_indicator(checkbox, self.scale, text_gap=text_gap)
-        text_button(row, "删除", lambda: self.remove_task(task), bg=palette.card, fg=palette.muted,
-                    padx=4).pack(side="right")
+        text_button(row, "", lambda: self.remove_task(task), bg=palette.card, fg=palette.muted,
+                    textvariable=self.text("todo.delete"), padx=4).pack(side="right")
         if self.orange_theme:
             tk.Frame(row, bg=palette.line, width=1, height=14).pack(side="right", padx=4)
-        text_button(row, "编辑", lambda: self.edit_task(task), bg=palette.card,
+        text_button(row, "", lambda: self.edit_task(task), bg=palette.card,
+                    textvariable=self.text("todo.edit"),
                     fg=palette.muted if self.orange_theme else palette.accent, padx=4).pack(
                         side="right")
         checkbox.pack(side="left", fill="x", expand=True)
@@ -991,15 +1085,19 @@ class StickyWindow:
     def task_action(self, operation, *args, **kwargs):
         try:
             operation(*args, **kwargs)
-        except (ValueError, KeyError) as error:
-            self.task_feedback.set(error.args[0])
+        except (TaskInputError, TaskNotFoundError) as error:
+            self.set_task_feedback(error.message_key)
             return False
         except (OSError, sqlite3.Error):
-            self.task_feedback.set("保存失败，请重试。")
+            self.set_task_feedback("todo.write_error")
             return False
-        self.task_feedback.set("" if self.orange_theme else "已保存到本机")
+        self.set_task_feedback(None if self.orange_theme else "todo.saved")
         self.refresh_tasks()
         return True
+
+    def set_task_feedback(self, key):
+        self.task_feedback_key = key
+        self.task_feedback.set(self.tr(key) if key else "")
 
     def add_task(self):
         if self.task_action(self.store.add, self.entry.get()):
@@ -1012,13 +1110,15 @@ class StickyWindow:
             self.refresh_tasks()
 
     def edit_task(self, task):
-        text = simpledialog.askstring("编辑待办", "待办内容", initialvalue=task["text"],
+        text = simpledialog.askstring(self.tr("todo.edit_title"), self.tr("todo.edit_prompt"),
+                                      initialvalue=task["text"],
                                       parent=self.root)
         if text is not None:
             self.change_task(task, text=text)
 
     def remove_task(self, task):
-        if messagebox.askyesno("删除待办", f"删除这条待办？\n\n{task['text'][:120]}",
+        if messagebox.askyesno(self.tr("todo.delete_title"),
+                               self.tr("todo.delete_prompt", text=task["text"][:120]),
                                parent=self.root):
             self.task_action(self.store.delete, task["id"])
 
@@ -1040,8 +1140,8 @@ class StickyWindow:
         try:
             threads = future.result()
         except (OSError, sqlite3.Error):
-            self.thread_feedback.set("会话读取失败，可点刷新重试。"
-                                     if self.threads is None else "刷新失败，以下是上次读取结果。")
+            self.set_thread_feedback("sessions.read_error" if self.threads is None
+                                     else "sessions.refresh_error")
             return
         self.update_unread_alert(threads)
         self.threads = threads
@@ -1055,18 +1155,25 @@ class StickyWindow:
         if threads and all(thread["unread_completed"] is None for thread in threads):
             return
         unread = {thread["id"] for thread in threads if thread["unread_completed"] is True}
-        if self.floating is not None and self.unread_threads is not None:
-            self.alert_threads.intersection_update(unread)
-            self.alert_threads.update(unread - self.unread_threads)
-            self.floating.set_unread_alert(bool(self.alert_threads))
+        if (self.floating is not None and self.unread_threads is not None
+                and unread - self.unread_threads):
+            self.floating.start_unread_alert()
         self.unread_threads = unread
 
+    def set_thread_feedback(self, key):
+        self.thread_feedback_key = key
+        self.thread_feedback.set(self.tr(key))
+
     def show_thread_summary(self):
+        self.thread_feedback_key = None
         if not self.show_project_counts:
             self.thread_feedback.set("")
             return
-        count = f"{len(self.project_cards)} 个项目 · {len(self.rendered_threads)} 个会话"
-        self.thread_feedback.set(f"{count} · 悬停项目查看" if self.rendered_threads else count)
+        counts = (self.tr.count("projects.count", len(self.project_cards)),
+                  self.tr.count("sessions.count", len(self.rendered_threads)))
+        summary = " · ".join(counts)
+        self.thread_feedback.set(f"{summary} · {self.tr('projects.hover')}"
+                                 if self.rendered_threads else summary)
 
     def render_projects(self):
         if self.threads == self.rendered_threads:
@@ -1076,9 +1183,10 @@ class StickyWindow:
             child.destroy()
         self.project_cards.clear()
         if not self.threads:
-            label(self.thread_list, "没有找到本机会话", color=self.palette.muted,
+            label(self.thread_list, "", color=self.palette.muted,
+                  textvariable=self.text("sessions.empty"),
                   bg=self.thread_list["bg"], pady=8).grid(sticky="w")
-        groups = group_threads(self.threads)
+        groups = group_threads(self.threads, project_label=lambda key, name: project_name(key, name, self.tr))
         paths = defaultdict(list)
         for group in groups:
             if group["subtitle"]:
@@ -1091,17 +1199,12 @@ class StickyWindow:
         self.show_thread_summary()
 
     def make_project_card(self, group, hint):
-        summaries = {
-            "unread": f"待查看 {group['unread']}",
-            "running": f"有活动 {group['running']}",
-            "read": "已查看",
-            "unknown": "待确认",
-        }
         status = group["status"]
         card_options = {}
         if status in self.project_backgrounds:
             card_options["fills"] = self.project_backgrounds[status]
-        card = ProjectCard(self.thread_list, group["title"], hint, status, summaries[status],
+        caption = self.tr(f"project.{status}", count=group.get(status))
+        card = ProjectCard(self.thread_list, group["title"], hint, status, caption,
                            self.scale, **card_options)
         for sequence in ("<Return>", "<space>"):
             card.bind(sequence, lambda _: self.open_project_with_keyboard(card, group))
@@ -1203,7 +1306,7 @@ class StickyWindow:
         try:
             open_thread_link(thread_id)
         except OSError:
-            messagebox.showerror("打开会话失败", "请确认本机已安装 Codex 桌面应用。",
+            messagebox.showerror(self.tr("session.open_error"), self.tr("session.open_hint"),
                                  parent=self.root)
         else:
             self.root.after(1300, self.refresh_threads)

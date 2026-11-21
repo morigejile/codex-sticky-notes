@@ -6,7 +6,8 @@ import tkinter as tk
 from datetime import datetime
 from tkinter import font as tkfont
 
-from data import STATUS_LABELS, is_finished_and_read
+from data import is_finished_and_read
+from i18n import thread_title, translator_for
 from note_icons import corner_images, icon
 from palette import palette_for
 
@@ -367,11 +368,12 @@ class SessionCard(tk.Canvas):
         self.palette = palette = palette_for(parent)
         super().__init__(parent, bg=palette.card, bd=0, highlightthickness=0, width=1, height=1,
                          cursor="hand2", takefocus=True)
-        self.title = thread["title"]
+        tr = translator_for(parent)
+        self.title = thread_title(thread, tr)
         self.progress = thread["progress"]
         self.when = datetime.fromtimestamp(thread["updated"] / 1000).strftime("%m-%d %H:%M")
         status = thread["status"]
-        self.caption = "完成待查看" if thread["unread_completed"] else STATUS_LABELS[status]
+        self.caption = tr("status.unread_completed" if thread["unread_completed"] else f"status.{status}")
         self.status_ink = palette.status_colors.get(status, palette.muted)
         self.fill, self.hover_fill, self.border = palette.field, palette.hover, palette.line
         if thread["unread_completed"]:

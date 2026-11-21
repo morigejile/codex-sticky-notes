@@ -12,7 +12,8 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "plugins" / "codex-sticky-notes"))
 from appearance import PillButton
-from data import TaskStore
+from data import TaskStore, group_threads
+from i18n import load_language, save_language
 from native_frame import WS_CAPTION, gdi32, set_window_bounds, user32, window_style
 from palette import ORANGE, SAGE
 from window import StickyWindow, screen_box, work_area
@@ -76,6 +77,63 @@ def check_window_overlay(widget, rounded_window):
     assert (bounds.left, bounds.top, bounds.right, bounds.bottom) == screen_box(widget)
 
 
+def widget_text(widget):
+    variable = widget["textvariable"]
+    return widget.getvar(variable) if variable else widget["text"]
+
+
+def check_languages(store, threads, settings):
+    root = tk.Tk()
+    window = StickyWindow(root, store, lambda: threads, settings_path=settings)
+    try:
+        until(root, lambda: window.threads is not None and window.thread_list.winfo_ismapped())
+        x, y, _, _ = screen_box(root)
+        narrow_width = root.minsize()[0]
+        set_window_bounds(root, x, y, narrow_width, root.winfo_height())
+        until(root, lambda: root.winfo_width() <= narrow_width + 24)
+        window.entry.insert(0, "保留草稿")
+        window.entry.icursor(2)
+        window.language_menu.invoke(2)
+        until(root, lambda: root.title() == "Codex Sticky Notes")
+        assert load_language(settings) == "en"
+        assert window.entry.get() == "保留草稿" and window.entry.index("insert") == 2
+        assert widget_text(window.collapse_button) == "Collapse"
+        assert widget_text(window.task_freeze_switch) == "Pin tasks"
+        assert window.count["text"] == "0 left"
+        assert window.project_cards["one"].title == "示例应用"
+        group = next(group for group in group_threads(window.threads) if group["key"] == "one")
+        assert window.project_cards["one"].caption == f"To review {group['unread']}"
+        for control in (window.language_menu.master, window.pin_control, window.collapse_button,
+                        window.task_freeze_switch, window.count):
+            assert control.winfo_viewable() and control.winfo_width() >= control.winfo_reqwidth()
+            assert screen_box(control)[2] <= screen_box(root)[2]
+        window.open_project_with_keyboard(window.project_cards["one"], group)
+        root.update_idletasks()
+        assert window.popup.count["text"] == f"{len(group['threads'])} sessions"
+        assert window.popup.links["running"].caption == "To review"
+        assert window.popup.links["running"].title == "检查新版本"
+        for card in window.popup.links.values():
+            assert card.bbox("session-status")[2] < card.winfo_width()
+        window.language_menu.invoke(1)
+        until(root, lambda: root.title() == "Codex 便签")
+        assert load_language(settings) == "zh-CN"
+        assert window.entry.get() == "保留草稿"
+        assert widget_text(window.task_freeze_switch) == "固定待办"
+        assert window.project_cards["one"].caption == f"待查看 {group['unread']}"
+        window.language_menu.invoke(2)
+    finally:
+        window.close()
+
+    root = tk.Tk()
+    window = StickyWindow(root, store, lambda: threads, settings_path=settings)
+    try:
+        until(root, lambda: window.threads is not None)
+        assert root.title() == "Codex Sticky Notes"
+        assert widget_text(window.collapse_button) == "Collapse"
+    finally:
+        window.close()
+
+
 def check_window(store, *, preview=False, project_color_demo=None):
     orange_theme = not preview or project_color_demo is not None
     now = int(time.time() * 1000)
@@ -108,8 +166,10 @@ def check_window(store, *, preview=False, project_color_demo=None):
                             unread_completed=False))
     root = tk.Tk()
     root.attributes("-topmost", True)
+    settings = store.file.with_name("settings.json")
+    save_language(settings, "zh-CN")
     window = StickyWindow(root, store, lambda: threads, preview=preview,
-                          project_color_demo=project_color_demo)
+                          project_color_demo=project_color_demo, settings_path=settings)
     cursor = (-1, -1)
     pointer = patch.object(root, "winfo_pointerxy", side_effect=lambda: cursor)
     pointer.start()
@@ -156,7 +216,7 @@ def check_window(store, *, preview=False, project_color_demo=None):
             assert title is not None
             art = next(child for child in top.winfo_children() if isinstance(child, tk.Canvas))
             close_button = next(child for child in window.pin_control.master.winfo_children()
-                                if isinstance(child, tk.Button) and child["text"] == "关闭")
+                                if isinstance(child, tk.Button) and widget_text(child) == "关闭")
             assert close_button["bg"] == ORANGE.hero
             assert title.winfo_rootx() < window.pin_control.winfo_rootx() < art.winfo_rootx()
             assert abs(center(title)[1] - center(window.pin_control)[1]) <= 1
@@ -399,7 +459,7 @@ def check_window(store, *, preview=False, project_color_demo=None):
 
         assert indicator_state() == "hidden"
 
-        # A different session becomes unread while the overall count stays the same.
+        # A new session becomes unread while the note is collapsed.
         threads = [
             dict(thread, unread=False, unread_completed=False) if thread["id"] == "one"
             else dict(thread, status="completed", unread=True, unread_completed=True)
@@ -410,10 +470,24 @@ def check_window(store, *, preview=False, project_color_demo=None):
         until(root, lambda: indicator_state() == "normal")
         until(root, lambda: indicator_state() == "hidden")
         until(root, lambda: indicator_state() == "normal")
+        assert window.floating.UNREAD_ALERT_MS == 3_600_000
+        original_expiry = window.floating.alert_expiry
+        assert original_expiry is not None
         threads = [dict(thread, unread=False, unread_completed=False)
                    if thread["id"] == "running" else thread for thread in threads]
         window.refresh_threads()
         until(root, lambda: window.pending is None)
+        assert window.floating.alert_timer is not None
+        assert window.floating.alert_expiry == original_expiry
+
+        with patch.object(window.floating, "UNREAD_ALERT_MS", 250):
+            threads = [dict(thread, unread=True, unread_completed=True)
+                       if thread["id"] == "one" else thread for thread in threads]
+            window.refresh_threads()
+            until(root, lambda: window.pending is None)
+            assert window.floating.alert_expiry not in (None, original_expiry)
+            assert original_expiry not in root.tk.splitlist(root.tk.call("after", "info"))
+        until(root, lambda: window.floating.alert_timer is None)
         assert indicator_state() == "hidden"
 
         face.event_generate("<Leave>")
@@ -449,10 +523,12 @@ def check_window(store, *, preview=False, project_color_demo=None):
                    if thread["id"] == "running" else thread for thread in threads]
         window.refresh_threads()
         until(root, lambda: indicator_state() == "normal")
-        alert_timer = window.floating.alert_timer
+        alert_timers = (window.floating.alert_timer, window.floating.alert_expiry)
+        assert all(alert_timers)
         window.restore()
         until(root, lambda: root.state() == "normal" and window.floating is None)
-        assert alert_timer not in root.tk.splitlist(root.tk.call("after", "info"))
+        assert not set(alert_timers).intersection(root.tk.splitlist(root.tk.call("after", "info")))
+        until(root, lambda: window.pending is None)
         if orange_theme:
             assert not window_style(root) & WS_CAPTION
             assert window.rounded_window.shape is not None
@@ -460,6 +536,8 @@ def check_window(store, *, preview=False, project_color_demo=None):
     finally:
         pointer.stop()
         window.close()
+    if orange_theme and project_color_demo is None:
+        check_languages(store, threads, settings)
 
 
 if __name__ == "__main__":
