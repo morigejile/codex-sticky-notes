@@ -4,7 +4,6 @@ import sqlite3
 import sys
 from contextlib import contextmanager
 from typing import Annotated, Any
-from urllib.parse import quote
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
@@ -13,7 +12,7 @@ from pydantic import Field
 
 from data import APP_HOME, TaskInputError, TaskNotFoundError, TaskStore, read_threads
 from i18n import Translator, load_language, project_name, thread_title
-from launch import open_notes
+from launch import open_notes, thread_url
 
 server = FastMCP("Codex 便签")
 store = TaskStore()
@@ -52,7 +51,7 @@ def list_recent_threads(limit: Annotated[int, Field(ge=1, le=50)] = 10) -> dict[
                 "status": tr(f"status.{thread['status']}"),
                 "status_code": thread["status"],
                 "progress": thread["progress"],
-                "link": "codex://threads/" + quote(thread["id"], safe=""),
+                "link": thread_url(thread["id"]),
             }
             for thread in threads
         ],

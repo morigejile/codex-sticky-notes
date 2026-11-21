@@ -1029,7 +1029,6 @@ class StickyWindow:
             activebackground=palette.card, selectcolor=palette.field, anchor="w", justify="left",
             wraplength=235, cursor="hand2",
             highlightthickness=1, highlightbackground=palette.card, highlightcolor=palette.accent)
-        checkbox.value = value
         text_gap = round(5 * self.scale)
         rounded_indicator(checkbox, self.scale, text_gap=text_gap)
         text_button(row, "", lambda: self.remove_task(task), bg=palette.card, fg=palette.muted,

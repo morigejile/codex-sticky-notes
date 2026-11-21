@@ -223,8 +223,9 @@ def project_path_module(path):
     return posixpath if sys.platform == "darwin" else ntpath
 
 
-def normalized_project_path(path):
-    path_module = project_path_module(path)
+def normalized_project_path(path, *, path_module=None):
+    if path_module is None:
+        path_module = project_path_module(path)
     return path_module.normcase(path_module.normpath(path))
 
 
@@ -241,7 +242,7 @@ def _thread_project(row, desktop, projects, aliases, workspaces):
             project_id = aliases.get(project_id, project_id)
     directory = row["cwd"] or ""
     path_module = project_path_module(directory)
-    cwd = normalized_project_path(directory) if directory else ""
+    cwd = normalized_project_path(directory, path_module=path_module) if directory else ""
     sep = path_module.sep
     if project_id not in projects and cwd:
         project_id = next((key for path, key in workspaces

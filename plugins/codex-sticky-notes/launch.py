@@ -29,8 +29,12 @@ def start_gui(script, *args):
     )
 
 
+def thread_url(thread_id):
+    return "codex://threads/" + quote(thread_id, safe="")
+
+
 def open_thread_link(thread_id):
-    url = "codex://threads/" + quote(thread_id, safe="")
+    url = thread_url(thread_id)
     if sys.platform == "darwin":
         try:
             subprocess.run(["/usr/bin/open", url], check=True,
