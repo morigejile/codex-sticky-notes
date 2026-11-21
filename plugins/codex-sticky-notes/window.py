@@ -624,7 +624,9 @@ class StickyWindow:
         button = tk.Menubutton(
             parent, textvariable=self.text("language.menu"), font=ui_font(10),
             bg=palette.hero, fg=palette.ink, activebackground=palette.hero_border,
-            activeforeground=palette.ink, relief="flat", bd=0, padx=5, takefocus=True,
+            activeforeground=palette.ink, relief="flat", bd=0, padx=round(5 * self.scale),
+            pady=0, takefocus=True, cursor="hand2", highlightthickness=1,
+            highlightbackground=palette.hero, highlightcolor=palette.accent,
         )
         self.language_menu = menu = tk.Menu(button, tearoff=False)
         for choice, name in zip(LANGUAGE_CHOICES, (self.tr("language.system"), "简体中文", "English")):
@@ -666,20 +668,41 @@ class StickyWindow:
 
     def make_header_controls(self, parent):
         palette = self.palette
-        self.collapse_button = text_button(
-            parent, "", self.collapse, bg=palette.hero, fg=palette.ink, padx=3,
-            textvariable=self.text("action.collapse"))
-        self.collapse_button.configure(font=ui_font(11))
+        scale = self.scale
+        toolbar = RoundedSurface(parent, outside=palette.hero, fill=palette.hero,
+                                 radius=round(18 * scale), border=palette.hero_border, antialias=True)
+        row = tk.Frame(toolbar, bg=palette.hero)
+        row.pack(padx=round(7 * scale), pady=round(4 * scale))
+        row.rowconfigure(0, minsize=round(28 * scale))
+        padding = round(5 * scale)
         self.pin_control = tk.Checkbutton(
-            parent, textvariable=self.text("action.pin"), variable=self.pinned, command=self.toggle_pin,
-            font=ui_font(11), bg=palette.hero, fg=palette.ink, activebackground=palette.hero,
-            activeforeground=palette.ink, selectcolor=palette.card, cursor="hand2", padx=0,
+            row, textvariable=self.text("action.pin"), variable=self.pinned, command=self.toggle_pin,
+            font=ui_font(10), bg=palette.hero, fg=palette.ink, activebackground=palette.hero_border,
+            activeforeground=palette.ink, cursor="hand2", padx=padding, pady=0,
             highlightthickness=1, highlightbackground=palette.hero, highlightcolor=palette.accent,
         )
-        rounded_indicator(self.pin_control, self.scale, on_hero=True)
-        self.pin_control.pack(side="left")
-        tk.Frame(parent, bg=palette.hero_border, width=1, height=16).pack(side="left", padx=8)
-        self.collapse_button.pack(side="left")
+        rounded_indicator(self.pin_control, scale, on_hero=True, text_gap=round(3 * scale))
+        self.pin_control.grid(row=0, column=0, sticky="nsew")
+        self.collapse_button = text_button(
+            row, "", self.collapse, bg=palette.hero, fg=palette.ink, hover_bg=palette.hero_border,
+            padx=padding, pady=0, textvariable=self.text("action.collapse"))
+        self.collapse_button.grid(row=0, column=1, sticky="nsew")
+        self.make_language_menu(row).grid(row=0, column=2, sticky="nsew")
+        if WINDOWS:
+            separator = tk.Frame(row, bg=palette.hero_border, width=1, height=round(14 * scale))
+            separator.grid(row=0, column=3, padx=round(4 * scale))
+            row.columnconfigure(4, minsize=round(24 * scale))
+            close_button = text_button(
+                row, "", self.close, bg=palette.hero, fg=palette.ink, hover_bg=palette.hero_border,
+                image=icon(row, "close", round(16 * scale), palette.ink),
+                textvariable=self.text("action.close"), padx=0, pady=0)
+            close_button.bind("<Return>", lambda _: close_button.invoke())
+            close_button.grid(row=0, column=4, sticky="nsew")
+        if WINDOWS:
+            for area in (toolbar.canvas, row):
+                area.configure(cursor="fleur")
+                area.bind("<ButtonPress-1>", self.drag_header)
+        return toolbar
 
     def make_header(self):
         if WINDOWS:
@@ -692,20 +715,7 @@ class StickyWindow:
         top.columnconfigure(2, weight=1)
         title = label(top, "", size=24, weight="bold", bg=palette.hero,
                       textvariable=self.text("app.heading"))
-        controls = tk.Frame(top, bg=palette.hero)
-        self.make_header_controls(controls)
-        if WINDOWS:
-            tk.Frame(controls, bg=palette.hero_border, width=1, height=16).pack(
-                side="left", padx=8)
-            close_image = icon(controls, "close", round(16 * self.scale), palette.ink)
-            close_button = text_button(
-                controls, "", self.close, bg=palette.hero, fg=palette.ink,
-                hover_bg=palette.hero_border, image=close_image,
-                textvariable=self.text("action.close"),
-                padx=round(6 * self.scale), pady=round(6 * self.scale))
-            close_button.bind("<Return>", lambda _: close_button.invoke())
-            close_button.pack(side="left")
-        self.make_language_menu(controls).pack(side="left", padx=(4, 0))
+        controls = self.make_header_controls(top)
 
         size = round(64 * self.scale)
         art = tk.Canvas(top, width=size + 12, height=size, bg=palette.hero, highlightthickness=0)
@@ -716,7 +726,7 @@ class StickyWindow:
         else:
             art.create_image((size + 12) // 2, size // 2, image=self.hero_image)
 
-        gap = round(21 * self.scale)
+        gap = round(14 * self.scale)
         stacked = False
         title.grid(row=0, column=0, sticky="w")
         controls.grid(row=0, column=1, sticky="w", padx=(gap, 0))

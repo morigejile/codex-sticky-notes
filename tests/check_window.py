@@ -140,8 +140,10 @@ def check_languages(store, threads, settings):
         assert window.project_cards["one"].title == "示例应用"
         group = next(group for group in group_threads(window.threads) if group["key"] == "one")
         assert window.project_cards["one"].caption == f"To review {group['unread']}"
-        for control in (window.language_menu.master, window.pin_control, window.collapse_button,
-                        window.task_freeze_switch, window.count):
+        close_button = next(child for child in window.pin_control.master.winfo_children()
+                            if isinstance(child, tk.Button) and widget_text(child) == "Close")
+        for control in (window.pin_control, window.collapse_button, window.language_menu.master,
+                        close_button, window.task_freeze_switch, window.count):
             assert control.winfo_viewable() and control.winfo_width() >= control.winfo_reqwidth()
             assert screen_box(control)[2] <= screen_box(root)[2]
         window.open_project_with_keyboard(window.project_cards["one"], group)
@@ -249,11 +251,19 @@ def check_window(store):
         close_button = next(child for child in window.pin_control.master.winfo_children()
                             if isinstance(child, tk.Button) and widget_text(child) == "关闭")
         assert close_button["bg"] == ORANGE.hero
+        window.collapse_button.event_generate("<Enter>")
+        assert window.collapse_button["bg"] == ORANGE.hero_border
+        assert window.collapse_button["activebackground"] == ORANGE.hero_border
+        window.collapse_button.event_generate("<Leave>")
+        assert window.collapse_button["bg"] == ORANGE.hero
         assert title.winfo_rootx() < window.pin_control.winfo_rootx() < art.winfo_rootx()
         assert abs(center(title)[1] - center(window.pin_control)[1]) <= 1
         assert not int(window.pin_control["indicatoron"])
         assert window.pin_control["image"] and window.pin_control["selectimage"]
-        assert window.pin_control.winfo_rootx() < window.collapse_button.winfo_rootx()
+        controls = (window.pin_control, window.collapse_button, window.language_menu.master, close_button)
+        assert all(screen_box(left)[2] <= screen_box(right)[0] for left, right in zip(controls, controls[1:]))
+        assert len({center(control)[1] for control in controls}) == 1
+        check_antialiased_corners(window.pin_control.master.master.canvas, "surface")
         assert window.thread_list["bg"] == ORANGE.card
         assert window.entry_hint.winfo_ismapped() and not window.entry.get()
         assert window.entry.master.winfo_height() >= round(35 * window.scale)
@@ -281,8 +291,11 @@ def check_window(store):
         assert checkbox["image"] and checkbox["selectimage"]
         indicator_width = int(root.tk.call("image", "width", checkbox["image"]))
         assert int(root.tk.call("image", "height", checkbox["image"])) == round(17 * window.scale)
-        assert indicator_width == int(root.tk.call(
-            "image", "width", window.pin_control["image"])) + round(5 * window.scale)
+        pin_image = window.pin_control["image"]
+        pin_size = int(root.tk.call("image", "height", pin_image))
+        assert pin_size == round(17 * window.scale)
+        assert int(root.tk.call("image", "width", pin_image)) == pin_size + round(3 * window.scale)
+        assert indicator_width == pin_size + round(5 * window.scale)
         checkbox.invoke()
         assert store.list()[0]["done"]
 
@@ -327,7 +340,8 @@ def check_window(store):
         until(root, lambda: read.winfo_rooty() > one.winfo_rooty())
         assert read.winfo_rootx() == one.winfo_rootx()
         assert title.winfo_ismapped() and close_button.winfo_ismapped() and art.winfo_ismapped()
-        assert screen_box(close_button)[2] < screen_box(art)[0]
+        assert screen_box(controls[0])[1] >= screen_box(title)[3]
+        assert screen_box(controls[-1])[2] <= screen_box(root)[2]
         resize(original_width, original_height)
         until(root, lambda: read.winfo_rooty() == one.winfo_rooty())
         assert abs(center(title)[1] - center(window.pin_control)[1]) <= 1
