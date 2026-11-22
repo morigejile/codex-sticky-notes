@@ -257,8 +257,8 @@ class ProjectCard(tk.Canvas):
         self.focused = False
         self.title_font = tkfont.Font(self, font=ui_font(10, "bold"))
         self.small_font = tkfont.Font(self, font=ui_font(8))
-        self.padding = round(10 * scale)
-        self.folder_size = round(32 * scale)
+        self.padding = round(7 * scale)
+        self.folder_size = round(26 * scale)
         self.badge_height = self.small_font.metrics("linespace") + round(4 * scale)
         self.title_badge_gap = max(1, round(3 * scale))
         self.bind("<Configure>", lambda _: self.paint())
@@ -302,11 +302,11 @@ class ProjectCard(tk.Canvas):
         folder_top = (height - folder_size) // 2
         folder_bg = self.FOLDER_BACKGROUNDS[self.status]
         paint_smooth_rect(self, pad, folder_top, folder_size, folder_size,
-                          round(8 * s), folder_bg, folder_bg, tag="folder-background")
-        folder = icon(self, "folder", round(22 * s), palette.ink)
+                          round(7 * s), folder_bg, folder_bg, tag="folder-background")
+        folder = icon(self, "folder", round(19 * s), palette.ink)
         self.create_image(pad + folder_size // 2, folder_top + folder_size // 2, image=folder)
 
-        text_left = pad + folder_size + round(8 * s)
+        text_left = pad + folder_size + round(6 * s)
         text_width = width - text_left - pad
         name = two_line_text(self.title, self.title_font, text_width, prefer_word_break=True)
         title_height = (name.count("\n") + 1) * self.title_font.metrics("linespace")

@@ -34,6 +34,10 @@ ULW_ALPHA = 2
 AC_SRC_OVER = 0
 AC_SRC_ALPHA = 1
 DIB_RGB_COLORS = 0
+RESIZE_CURSORS = {
+    10: "size_we", 11: "size_we", 12: "size_ns", 13: "size_nw_se",
+    14: "size_ne_sw", 15: "size_ns", 16: "size_ne_sw", 17: "size_nw_se",
+}
 
 
 class _BitmapInfo(ctypes.Structure):
@@ -90,10 +94,6 @@ user32.UpdateLayeredWindow.argtypes = (
 user32.UpdateLayeredWindow.restype = wintypes.BOOL
 user32.SetWindowRgn.argtypes = (wintypes.HWND, wintypes.HANDLE, wintypes.BOOL)
 user32.SetWindowRgn.restype = ctypes.c_int
-user32.LoadCursorW.argtypes = (wintypes.HINSTANCE, ctypes.c_void_p)
-user32.LoadCursorW.restype = wintypes.HANDLE
-user32.SetCursor.argtypes = (wintypes.HANDLE,)
-user32.SetCursor.restype = wintypes.HANDLE
 gdi32.CreateRoundRectRgn.argtypes = (ctypes.c_int,) * 6
 gdi32.CreateRoundRectRgn.restype = wintypes.HANDLE
 gdi32.CreateRectRgn.argtypes = (ctypes.c_int,) * 4
@@ -148,13 +148,6 @@ def hide_window_frame(root):
 def set_window_bounds(root, x, y, width, height):
     user32.SetWindowPos(frame_handle(root), None, x, y, width, height,
                         SWP_KEEP_ORDER_AND_FOCUS)
-
-
-def set_resize_cursor(hit):
-    cursor_id = {10: 32644, 11: 32644, 12: 32645, 13: 32642, 14: 32643,
-                 15: 32645, 16: 32643, 17: 32642}.get(hit)
-    if cursor_id:
-        user32.SetCursor(user32.LoadCursorW(None, cursor_id))
 
 
 def round_scroll_bottom(canvas, width, height, inset, radius):
@@ -275,7 +268,7 @@ def _paint_corner_overlay(handle, origin, size, coverage, colors, opacity):
 class RoundedWindow:
     """Clip the Tk window and blend the four corner edges over the desktop."""
 
-    def __init__(self, root, radius, *, resize_margin=0, corner_colors=None):
+    def __init__(self, root, radius, *, resize_margin=(0, 0), corner_colors=None):
         self.root = root
         self.radius = radius
         self.resize_margin = resize_margin
@@ -400,13 +393,13 @@ class RoundedWindow:
             return 0
         left, right = x - rect.left, rect.right - 1 - x
         top, bottom = y - rect.top, rect.bottom - 1 - y
-        margin = self.resize_margin
-        if top < margin:
+        horizontal, vertical = self.resize_margin
+        if top < vertical:
             return 13 if left < self.radius else 14 if right < self.radius else 12
-        if bottom < margin:
+        if bottom < vertical:
             return 16 if left < self.radius else 17 if right < self.radius else 15
-        if left < margin:
+        if left < horizontal:
             return 13 if top < self.radius else 16 if bottom < self.radius else 10
-        if right < margin:
+        if right < horizontal:
             return 14 if top < self.radius else 17 if bottom < self.radius else 11
         return 0

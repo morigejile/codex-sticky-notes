@@ -155,11 +155,12 @@ def check_languages(store, threads, settings):
         until(root, lambda: root.title() == "Codex Sticky Notes")
         assert header.winfo_height() == header_height
         assert tkfont.Font(root, font=title["font"]).cget("size") == title_size == 16
-        assert abs(center(title)[1] - center(window.pin_control)[1]) <= 1
+        assert screen_box(window.pin_control)[1] >= screen_box(title)[3]
         assert window.pin_control.master.master is header
         close_button = next(child for child in window.pin_control.master.winfo_children()
                             if isinstance(child, tk.Button) and widget_text(child) == "Close")
-        assert screen_box(close_button)[2] <= screen_box(art)[0]
+        assert screen_box(close_button)[2] <= screen_box(root)[2]
+        assert screen_box(art)[3] <= screen_box(close_button)[1]
         x, y, _, _ = screen_box(root)
         narrow_width = root.minsize()[0]
         set_window_bounds(root, x, y, narrow_width, root.winfo_height())
@@ -224,10 +225,10 @@ def check_window(store):
              project_path="D:/Two"),
         dict(id="read", title="归纳资料", updated=now - 60,
              status="completed", unread_completed=False, unread=False,
-             project_key="read", project="资料", project_path="D:/Read"),
+             project_key="read", project="expression-trainer-pro", project_path="D:/Read"),
         dict(id="unknown", title="核对进度", updated=now - 75,
              status="stale", unread_completed=False, unread=None,
-             project_key="unknown", project="资料", project_path="D:/Unknown"),
+             project_key="unknown", project="expression-trainer-pro", project_path="D:/Unknown"),
     ]
     older_ids = [f"older-{index}" for index in range(24)]
     older_statuses = {"older-0": ("failed", False), "older-1": ("completed", None),
@@ -293,6 +294,9 @@ def check_window(store):
         assert window.collapse_button["activebackground"] == ORANGE.hero_border
         window.collapse_button.event_generate("<Leave>")
         assert window.collapse_button["bg"] == ORANGE.hero
+        compact_width, compact_height = root.winfo_width(), root.winfo_height()
+        resize(round(510 * window.scale), compact_height)
+        until(root, lambda: abs(center(title)[1] - center(window.pin_control)[1]) <= 1)
         assert title.winfo_rootx() < window.pin_control.winfo_rootx() < art.winfo_rootx()
         assert abs(center(title)[1] - center(window.pin_control)[1]) <= 1
         assert not int(window.pin_control["indicatoron"])
@@ -300,6 +304,8 @@ def check_window(store):
         controls = (window.pin_control, window.collapse_button, window.language_menu.master, close_button)
         assert all(screen_box(left)[2] <= screen_box(right)[0] for left, right in zip(controls, controls[1:]))
         assert len({center(control)[1] for control in controls}) == 1
+        resize(compact_width, compact_height)
+        until(root, lambda: screen_box(controls[0])[1] >= screen_box(title)[3])
         assert window.thread_list["bg"] == ORANGE.card
         assert window.entry_hint.winfo_ismapped() and not window.entry.get()
         assert window.entry.master.winfo_height() >= round(35 * window.scale)
@@ -343,10 +349,10 @@ def check_window(store):
 
         assert list(window.project_cards) == ["one", "two", "read", "unknown"]
         one, two, read, unknown = window.project_cards.values()
-        assert read.title == unknown.title == "资料"
+        assert read.title == unknown.title == "expression-trainer-pro"
         for card in (read, unknown):
             texts = [card.itemcget(item, "text") for item in card.find_all() if card.type(item) == "text"]
-            assert texts == [card.title, card.caption]
+            assert texts == ["expression-\ntrainer-pro", card.caption]
         assert len({card.status for card in (one, two, read, unknown)}) == 4
         for card in window.project_cards.values():
             check_antialiased_corners(card, "surface")
@@ -381,13 +387,25 @@ def check_window(store):
         assert one.title_font.cget("size") == 9 and one.small_font.cget("size") == 7
         width = root.winfo_width()
         middle = root.winfo_height() // 2
-        root.event_generate("<ButtonPress-1>", x=width - 2, y=middle)
+        edge = round(10 * window.scale)
+        window.page.canvas.event_generate("<Leave>", rootx=root.winfo_rootx() + width - edge,
+                                          rooty=root.winfo_rooty() + middle)
+        assert root["cursor"] == "size_we"
+        root.event_generate("<ButtonPress-1>", x=width - edge, y=middle)
+        assert root.grab_current() is root
         root.event_generate("<B1-Motion>", x=width + 30, y=middle)
+        assert root["cursor"] == "size_we"
         root.event_generate("<ButtonRelease-1>", x=width + 30, y=middle)
+        assert root.grab_current() is None
         until(root, lambda: root.winfo_width() > width)
+        root.event_generate("<Motion>", x=width // 2, y=middle)
+        assert root["cursor"] != "size_we"
         resize(width, root.winfo_height())
         until(root, lambda: abs(root.winfo_width() - width) <= 3)
         original_width, original_height = root.winfo_width(), root.winfo_height()
+        left, _, right, _ = work_area(root)
+        assert original_width == min(round(460 * window.scale), right - left - 55)
+        assert screen_box(window.page.bar)[2] <= screen_box(root)[2] - round(12 * window.scale)
         resize(root.minsize()[0], original_height)
         until(root, lambda: read.winfo_rooty() > one.winfo_rooty())
         assert two.winfo_rooty() == one.winfo_rooty()
@@ -397,7 +415,6 @@ def check_window(store):
         assert screen_box(controls[-1])[2] <= screen_box(root)[2]
         resize(original_width, original_height)
         until(root, lambda: read.winfo_rooty() == one.winfo_rooty())
-        assert abs(center(title)[1] - center(window.pin_control)[1]) <= 1
         canvas = window.page.canvas
         bottom_inset = round(17 * window.scale)
         resize(original_width, root.minsize()[1])

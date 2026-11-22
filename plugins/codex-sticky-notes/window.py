@@ -32,7 +32,7 @@ MACOS = sys.platform == "darwin"
 if WINDOWS:
     from lifecycle import Event, Instance
     from native_frame import (
-        RoundedWindow, hide_window_frame, round_scroll_bottom, set_resize_cursor, set_window_bounds,
+        RESIZE_CURSORS, RoundedWindow, hide_window_frame, round_scroll_bottom, set_window_bounds,
     )
 else:
     from mac_lifecycle import Event, Instance
@@ -551,6 +551,7 @@ class StickyWindow:
         self.floating = None
         self.floating_position = None
         self.edge_drag = None
+        self.edge_cursor = None
         self.header_drag = None
         self.collapsed = False
         self.task_feedback = tk.StringVar()
@@ -564,7 +565,7 @@ class StickyWindow:
         self.update_title()
         self.scale = root.winfo_fpixels("1i") / 96
         left, top, right, bottom = work_area(root)
-        width = min(round(510 * self.scale), right - left - 55)
+        width = min(round(460 * self.scale), right - left - 55)
         height = min(round(672 * self.scale), bottom - top - 70)
         x = left + max(20, (right - left - width - round(428 * self.scale)) // 2)
         y = top + (bottom - top - height) // 2
@@ -575,16 +576,19 @@ class StickyWindow:
         root.protocol("WM_DELETE_WINDOW", self.close)
         root.bind("<Unmap>", self.on_unmap)
         root.bind("<Escape>", self.escape_project)
+        side_inset = 6
         if WINDOWS:
+            side_inset = round(12 * self.scale)
             root.bind("<Map>", self.on_map, add="+")
             self.rounded_window = RoundedWindow(
-                root, round(30 * self.scale), resize_margin=round(6 * self.scale),
+                root, round(30 * self.scale), resize_margin=(side_inset, round(6 * self.scale)),
                 corner_colors=lambda: (self.palette.hero, self.palette.paper))
             root.bind("<ButtonPress-1>", self.resize_from_edge, add="+")
             root.bind("<B1-Motion>", self.drag_window, add="+")
             root.bind("<ButtonRelease-1>", self.finish_window_drag, add="+")
-            root.bind("<Motion>", lambda event: set_resize_cursor(
-                self.rounded_window.resize_hit(event.x_root, event.y_root)), add="+")
+            root.bind("<Enter>", self.update_resize_cursor, add="+")
+            root.bind("<Motion>", self.update_resize_cursor, add="+")
+            root.bind("<Leave>", self.update_resize_cursor, add="+")
 
         style = ttk.Style(root)
         style.theme_use("clam")
@@ -598,7 +602,7 @@ class StickyWindow:
         frame_inset = round(17 * self.scale)
         self.page = ScrollPage(root, padding=padding, bottom_radius=frame_inset)
         # Keep the curved bottom edge outside the scroll viewport.
-        self.page.pack(fill="both", expand=True, padx=(0, 6), pady=(0, frame_inset))
+        self.page.pack(fill="both", expand=True, padx=(0, side_inset), pady=(0, frame_inset))
         self.task_inset = frame_inset
         self.inline_task_host = tk.Frame(self.page.body, bg=paper)
         self.inline_task_host.pack(fill="x", pady=(self.task_inset, 0))
@@ -766,6 +770,29 @@ class StickyWindow:
                                 self.root.winfo_rooty())
         return "break"
 
+    def set_edge_cursor(self, widget=None, hit=0):
+        if self.edge_cursor is not None:
+            previous, original = self.edge_cursor
+            if previous is not widget or not hit:
+                if previous.winfo_exists():
+                    previous.configure(cursor=original)
+                self.edge_cursor = None
+        if hit:
+            current = widget["cursor"]
+            if self.edge_cursor is None:
+                self.edge_cursor = widget, current
+            if current != RESIZE_CURSORS[hit]:
+                widget.configure(cursor=RESIZE_CURSORS[hit])
+
+    def update_resize_cursor(self, event):
+        if self.edge_drag is None and self.header_drag is None:
+            hit = self.rounded_window.resize_hit(event.x_root, event.y_root)
+            pointed = self.root.winfo_containing(event.x_root, event.y_root) if hit else None
+            if pointed is not None and pointed.winfo_toplevel() is self.root:
+                self.set_edge_cursor(pointed, hit)
+            else:
+                self.set_edge_cursor()
+
     def resize_from_edge(self, event):
         hit = self.rounded_window.resize_hit(event.x_root, event.y_root)
         if hit and self.rounded_window.shape is not None:
@@ -774,6 +801,8 @@ class StickyWindow:
             self.edge_drag = (hit, event.x_root, event.y_root,
                               self.root.winfo_rootx() - left, self.root.winfo_rooty() - top,
                               self.root.winfo_width(), self.root.winfo_height())
+            self.set_edge_cursor(event.widget, hit)
+            event.widget.grab_set()
             return "break"
 
     def drag_window(self, event):
@@ -802,9 +831,18 @@ class StickyWindow:
         set_window_bounds(self.root, x, y, width, height)
         return "break"
 
-    def finish_window_drag(self, _):
+    def finish_window_drag(self, event=None):
         self.header_drag = None
+        if self.edge_drag is None:
+            return
         self.edge_drag = None
+        widget, _ = self.edge_cursor
+        if widget.winfo_exists() and widget.grab_current() is widget:
+            widget.grab_release()
+        if event is not None:
+            self.update_resize_cursor(event)
+        else:
+            self.set_edge_cursor()
 
     def make_content_panel(self, parent, *, pady=0):
         palette = self.palette
@@ -970,8 +1008,12 @@ class StickyWindow:
             self.rounded_window.refresh()
 
     def on_unmap(self, event):
-        if event.widget is self.root and not self.collapsed and self.root.state() == "iconic":
-            self.root.after_idle(self.collapse)
+        if event.widget is self.root:
+            self.finish_window_drag()
+            if WINDOWS:
+                self.set_edge_cursor()
+            if not self.collapsed and self.root.state() == "iconic":
+                self.root.after_idle(self.collapse)
 
     def collapse(self):
         if self.collapsed:
@@ -1182,7 +1224,7 @@ class StickyWindow:
             return
         height = next(iter(cards)).compact_height()
         columns, card_width, gap = tile_dimensions(width, self.scale, gap=9,
-                                                   target=130, maximum=220, column_limit=3)
+                                                   target=120, maximum=220, column_limit=3)
         for index, card in enumerate(cards):
             row, column = divmod(index, columns)
             card.configure(width=card_width, height=height)
