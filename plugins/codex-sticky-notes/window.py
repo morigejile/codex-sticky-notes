@@ -83,14 +83,6 @@ def popup_background(widget, fallback):
     return fallback
 
 
-def tile_dimensions(width, scale, *, gap, target, maximum, column_limit):
-    gap = round(gap * scale)
-    target = round(target * scale)
-    columns = max(1, min(column_limit, (width + gap) // (target + gap)))
-    side = max(1, min(round(maximum * scale), (width - gap * (columns - 1)) // columns))
-    return columns, side, gap
-
-
 class FloatingNote(tk.Toplevel):
     UNREAD_ALERT_MS = 60 * 60 * 1000
 
@@ -350,6 +342,7 @@ class ProjectPopup(tk.Toplevel):
         self.sessions = group["threads"]
         self.session_titles = [thread_title(thread, self.notes_tr, hide_project=True)
                                for thread in self.sessions]
+        self.session_metadata = [SessionCard.metadata(thread, self.notes_tr) for thread in self.sessions]
         self.open_thread = open_thread
         self.links = {}
         self.project_title = group["title"]
@@ -360,15 +353,17 @@ class ProjectPopup(tk.Toplevel):
         self.card_title_font = tkfont.Font(self, font=ui_font(10, "bold"))
         shell = RoundedSurface(self, outside=outside, radius=radius, border=border, antialias=True)
         shell.pack(fill="both", expand=True)
+        single_session = len(self.sessions) == 1
         self.page_inset = round(12 * scale)
-        self.count_gap = round(5 * scale)
+        self.header_inset = round(8 * scale) if single_session else self.page_inset
+        self.count_gap = round((2 if single_session else 5) * scale)
         self.header_pady = self.page_inset, round(9 * scale)
         self.header = tk.Frame(shell, bg=palette.card)
-        self.header.pack(fill="x", padx=self.page_inset, pady=self.header_pady)
+        self.header.pack(fill="x", padx=self.header_inset, pady=self.header_pady)
         title_row = tk.Frame(self.header, bg=palette.card)
         title_row.pack(fill="x")
-        self.count = label(title_row, self.notes_tr.count("sessions.count", len(self.sessions)), size=9,
-                           color=palette.muted, bg=palette.card)
+        self.count = label(title_row, self.notes_tr.count("sessions.count", len(self.sessions)),
+                           size=8 if single_session else 9, color=palette.muted, bg=palette.card)
         self.count.pack(side="right", padx=(self.count_gap, 0))
         self.title_label = label(title_row, "", weight="bold", size=heading_size, bg=palette.card)
         self.title_label.pack(side="left", fill="x", expand=True)
@@ -380,7 +375,10 @@ class ProjectPopup(tk.Toplevel):
         self.page.pack(fill="both", expand=True, padx=self.page_inset, pady=(0, self.page_inset))
         self.grid_inset = 2 * self.page_inset + self.page.bar.winfo_reqwidth()
         self.card_gap = round(8 * scale)
-        self.card_height = self.make_session_card(0).compact_height()
+        first = self.make_session_card(0)
+        self.card_height = first.compact_height()
+        self.target_card_width = max(first.metadata_width(caption, when)
+                                     for caption, when in set(self.session_metadata))
         self.place_next_to_anchor()
         self.page.canvas.configure(yscrollcommand=self.update_scrollbar)
         self.deiconify()
@@ -392,7 +390,7 @@ class ProjectPopup(tk.Toplevel):
         thread = self.sessions[index]
         thread_id = thread["id"]
         canvas = self.page.canvas
-        card = SessionCard(canvas, thread, self.session_titles[index],
+        card = SessionCard(canvas, thread, self.session_titles[index], self.session_metadata[index],
                            self.scale, self.card_title_font, self.path_font,
                            lambda: self.open_thread(thread_id))
         card.window_item = canvas.create_window(0, 0, window=card, anchor="nw")
@@ -442,7 +440,7 @@ class ProjectPopup(tk.Toplevel):
 
     def size_content(self, width):
         self.content_width = width
-        header_width = width - 2 * self.page_inset
+        header_width = width - 2 * self.header_inset
         title_width = max(1, header_width - self.count.winfo_reqwidth() - self.count_gap)
         self.title_label.configure(text=two_line_text(self.project_title, self.title_font, title_width))
         if self.path_label is not None:
@@ -475,8 +473,6 @@ class ProjectPopup(tk.Toplevel):
         left, top, right, bottom = work_area(self.anchor)
         x0, y0, x1, y1 = box
         gap = self.card_gap
-        # Follow the project tile within the range that keeps the metadata readable.
-        self.target_card_width = min(round(136 * self.scale), max(round(132 * self.scale), x1 - x0))
         widths = [self.grid_inset + count * self.target_card_width + (count - 1) * gap
                   for count in range(1, min(3, len(self.sessions)) + 1)]
         min_width = widths[0]
@@ -581,12 +577,10 @@ class StickyWindow:
         root.protocol("WM_DELETE_WINDOW", self.close)
         root.bind("<Unmap>", self.on_unmap)
         root.bind("<Escape>", self.escape_project)
-        side_inset = 6
         if WINDOWS:
-            side_inset = round(12 * self.scale)
             root.bind("<Map>", self.on_map, add="+")
             self.rounded_window = RoundedWindow(
-                root, round(30 * self.scale), resize_margin=(side_inset, round(6 * self.scale)),
+                root, round(30 * self.scale), resize_margin=(round(12 * self.scale), round(6 * self.scale)),
                 corner_colors=lambda: (self.palette.hero, self.palette.paper))
             root.bind("<ButtonPress-1>", self.resize_from_edge, add="+")
             root.bind("<B1-Motion>", self.drag_window, add="+")
@@ -602,14 +596,15 @@ class StickyWindow:
                         width=8, gripcount=0)
         style.map("Note.Vertical.TScrollbar", background=[("active", self.palette.scroll_hover)])
 
+        self.frame_inset = round(13 * self.scale)
+        self.panel_inset = round(14 * self.scale)
         self.make_header()
-        padding = (round(13 * self.scale) - side_inset // 2, 0)
-        frame_inset = round(17 * self.scale)
-        self.page = ScrollPage(root, padding=padding, bottom_radius=frame_inset)
-        # Reserve the same outer space on both sides of the canvas, including the scrollbar.
-        left_inset = side_inset + self.page.bar.winfo_reqwidth()
-        self.page.pack(fill="both", expand=True, padx=(left_inset, side_inset), pady=(0, frame_inset))
-        self.task_inset = frame_inset
+        self.task_inset = round(17 * self.scale)
+        self.page = ScrollPage(root, padding=(0, 0), bottom_radius=self.task_inset)
+        # The scrollbar sits inside the right gutter so the panels align with the left gutter.
+        right_inset = max(0, self.frame_inset - self.page.bar.winfo_reqwidth())
+        self.page.pack(fill="both", expand=True, padx=(self.frame_inset, right_inset),
+                       pady=(0, self.frame_inset))
         self.inline_task_host = tk.Frame(self.page.body, bg=paper)
         self.inline_task_host.pack(fill="x", pady=(self.task_inset, 0))
         self.root.bind("<Configure>", self.resize_fixed_task_rows, add="+")
@@ -712,9 +707,10 @@ class StickyWindow:
         hero = tk.Frame(self.root, bg=palette.hero)
         hero.pack(fill="x")
         top = tk.Frame(hero, bg=palette.hero)
-        top.pack(fill="x", padx=round(14 * self.scale), pady=round(5 * self.scale))
+        top.pack(fill="x", padx=(self.frame_inset + self.panel_inset, round(5 * self.scale)),
+                 pady=round(5 * self.scale))
         top.columnconfigure(2, weight=1)
-        title = label(top, "", size=17, weight="bold", bg=palette.hero,
+        title = label(top, "", size=17, weight="bold", bg=palette.hero, padx=0,
                       textvariable=self.text("app.heading"))
         controls = self.make_header_controls(top)
 
@@ -728,7 +724,7 @@ class StickyWindow:
         else:
             art.create_image(art_width // 2, size // 2, image=self.hero_image)
 
-        gap = round(6 * self.scale)
+        min_gap, max_gap = round(12 * self.scale), round(22 * self.scale)
         heading_font = tkfont.Font(top, font=title["font"])
         control_font = tkfont.Font(top, font=ui_font(10))
         languages = [Translator(choice) for choice in LANGUAGE_CHOICES if choice != "system"]
@@ -739,25 +735,24 @@ class StickyWindow:
             for tr in languages
         }
         widest_text = max(text_widths.values())
-        stacked = False
+        arrangement = None
         title.grid(row=0, column=0, sticky="w")
-        controls.grid(row=0, column=1, sticky="w", padx=(gap, 0))
-        art.grid(row=0, column=2, sticky="e")
+        controls.grid(row=0, column=1, sticky="w", padx=(min_gap, 0))
+        art.grid(row=0, column=3, sticky="e")
 
         def arrange_masthead(event=None):
-            nonlocal stacked
+            nonlocal arrangement
             width = event.width if event else top.winfo_width()
+            used = title.winfo_reqwidth() + controls.winfo_reqwidth() + art.winfo_reqwidth()
             # Use the same wrapping threshold for both translations.
-            single_row_width = (title.winfo_reqwidth() + controls.winfo_reqwidth() + art.winfo_reqwidth()
-                                + gap + widest_text - text_widths[self.tr.language])
-            narrow = width < single_row_width
-            if narrow == stacked:
+            stacked = width < used + min_gap + widest_text - text_widths[self.tr.language]
+            gap = 0 if stacked else min(max_gap, max(min_gap, width - used - min_gap))
+            if (stacked, gap) == arrangement:
                 return
-            stacked = narrow
-            title.grid_configure(columnspan=2 if stacked else 1)
+            arrangement = stacked, gap
+            title.grid_configure(columnspan=3 if stacked else 1)
             controls.grid_configure(row=1 if stacked else 0, column=0 if stacked else 1,
-                                    columnspan=3 if stacked else 1,
-                                    padx=(0 if stacked else gap, 0))
+                                    columnspan=4 if stacked else 1, padx=(gap, 0))
 
         self.reflow_masthead = arrange_masthead
         top.bind("<Configure>", arrange_masthead)
@@ -856,7 +851,7 @@ class StickyWindow:
         shell = RoundedSurface(parent, radius=round(17 * self.scale), antialias=True)
         shell.pack(fill="x", pady=pady)
         panel = tk.Frame(shell, bg=palette.card)
-        panel.pack(fill="x", padx=round(14 * self.scale), pady=round(12 * self.scale))
+        panel.pack(fill="x", padx=self.panel_inset, pady=round(12 * self.scale))
         return panel
 
     def make_tasks(self, parent):
@@ -939,9 +934,7 @@ class StickyWindow:
         if self.tasks_fixed.get():
             self.inline_task_host.pack_forget()
             self.fixed_task_host = tk.Frame(self.root, bg=self.palette.paper)
-            left = round(13 * self.scale)
-            right = left + 6 + self.page.bar.winfo_reqwidth()
-            self.fixed_task_host.pack(before=self.page, fill="x", padx=(left, right),
+            self.fixed_task_host.pack(before=self.page, fill="x", padx=self.frame_inset,
                                       pady=(self.task_inset, 0))
             self.make_tasks(self.fixed_task_host)
         else:
@@ -1230,8 +1223,9 @@ class StickyWindow:
         if not cards or width < 2:
             return
         height = next(iter(cards)).compact_height()
-        columns, card_width, gap = tile_dimensions(width, self.scale, gap=9,
-                                                   target=120, maximum=220, column_limit=3)
+        gap = round(9 * self.scale)
+        card_width = min(width, round(124 * self.scale))
+        columns = min(len(cards), (width + gap) // (card_width + gap))
         for index, card in enumerate(cards):
             row, column = divmod(index, columns)
             card.configure(width=card_width, height=height)
