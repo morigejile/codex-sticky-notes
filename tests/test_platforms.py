@@ -8,7 +8,7 @@ from unittest.mock import Mock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "plugins" / "codex-sticky-notes"))
 import data
 import launch
-from window import ScrollPage, distinguishing_folder
+from window import ScrollPage
 
 
 class PlatformTests(unittest.TestCase):
@@ -23,8 +23,6 @@ class PlatformTests(unittest.TestCase):
         self.assertEqual(project("/Users/test/Work/App/src")[0], "project:main")
         self.assertEqual(project("/Users/test/Work/Application")[0], "cwd:/Users/test/Work/Application")
         self.assertEqual(project("/Users/test/Work/app")[0], "cwd:/Users/test/Work/app")
-        self.assertEqual(distinguishing_folder("/Users/test/Work/App", ["/Users/test/Other/App"]),
-                         "Work/App")
 
     def test_mac_source_launch_uses_base_python_and_detaches(self):
         script = Path("source folder") / "window.py"

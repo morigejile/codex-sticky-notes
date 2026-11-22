@@ -137,8 +137,20 @@ def translator_for(widget):
     return widget.winfo_toplevel().notes_tr
 
 
-def thread_title(thread, tr):
-    return tr("session.untitled") if thread.get("untitled") else thread["title"]
+def thread_title(thread, tr, *, hide_project=False):
+    if thread.get("untitled"):
+        return tr("session.untitled")
+    title = thread["title"]
+    project = (thread.get("project") or "").strip()
+    if hide_project and project:
+        separator = r"(?:\s*[·•‧・:：|｜]\s*|\s+[-–—]\s+)"
+        prefix = rf"^\s*{re.escape(project)}{separator}"
+        match = re.match(prefix, title, flags=re.IGNORECASE)
+        if match:
+            name = title[match.end():].strip()
+            if name:
+                return name
+    return title
 
 
 def project_name(project_key, name, tr):

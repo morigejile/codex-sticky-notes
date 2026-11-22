@@ -7,7 +7,7 @@ from datetime import datetime
 from tkinter import font as tkfont
 
 from data import is_finished_and_read
-from i18n import thread_title, translator_for
+from i18n import translator_for
 from note_icons import corner_images, icon
 from palette import ORANGE
 
@@ -222,7 +222,7 @@ def shorten(text, font, width):
     return prefix.rstrip() + "…"
 
 
-def two_line_text(text, font, width):
+def two_line_text(text, font, width, *, prefer_word_break=False):
     text = " ".join(text.split())
     if font.measure(text) <= width:
         return text
@@ -231,18 +231,25 @@ def two_line_text(text, font, width):
         first += "-"
     # Prefer a space or hyphen near the right edge over breaking a Latin word.
     boundary = max(first.rfind(" "), first.rfind("-")) + 1
-    if boundary >= len(first) * 0.65:
+    if boundary and (boundary >= len(first) * 0.65
+                     or (prefer_word_break and font.measure(text[boundary:].lstrip()) <= width)):
         first = first[:boundary]
     return first.rstrip() + "\n" + shorten(text[len(first):].lstrip(), font, width)
 
 
 class ProjectCard(tk.Canvas):
-    def __init__(self, parent, title, hint, status, caption, scale):
+    FOLDER_BACKGROUNDS = {
+        "unread": "#F9C66F",
+        "running": "#8FCCAA",
+        "read": "#EBC8C9",
+        "unknown": "#BDC1E2",
+    }
+
+    def __init__(self, parent, title, status, caption, scale):
         self.palette = ORANGE
         super().__init__(parent, bg=parent["bg"], bd=0, highlightthickness=0, width=1, height=1,
                          cursor="hand2", takefocus=True)
         self.title = title
-        self.hint = hint
         self.status = status
         self.caption = caption
         self.scale = scale
@@ -250,7 +257,8 @@ class ProjectCard(tk.Canvas):
         self.focused = False
         self.title_font = tkfont.Font(self, font=ui_font(10, "bold"))
         self.small_font = tkfont.Font(self, font=ui_font(8))
-        self.title_top = round(32 * scale)
+        self.padding = round(10 * scale)
+        self.folder_size = round(32 * scale)
         self.badge_height = self.small_font.metrics("linespace") + round(4 * scale)
         self.title_badge_gap = max(1, round(3 * scale))
         self.bind("<Configure>", lambda _: self.paint())
@@ -265,15 +273,16 @@ class ProjectCard(tk.Canvas):
         self.selected = active
         self.paint()
 
-    def update_content(self, title, hint, status, caption):
-        content = title, hint, status, caption
-        if content != (self.title, self.hint, self.status, self.caption):
-            self.title, self.hint, self.status, self.caption = content
+    def update_content(self, title, status, caption):
+        content = title, status, caption
+        if content != (self.title, self.status, self.caption):
+            self.title, self.status, self.caption = content
             self.paint()
 
     def compact_height(self):
-        return (self.title_top + 2 * self.title_font.metrics("linespace")
-                + self.title_badge_gap + self.badge_height + round(8 * self.scale))
+        text_height = (2 * self.title_font.metrics("linespace")
+                       + self.title_badge_gap + self.badge_height)
+        return max(self.folder_size, text_height) + 2 * self.padding
 
     def paint(self):
         self.delete("all")
@@ -284,33 +293,35 @@ class ProjectCard(tk.Canvas):
         border, ink = palette.project_colors[self.status]
         paper, hover = palette.status_backgrounds[self.status]
         surface = hover if self.selected else paper
-        pad = round(13 * self.scale)
-        radius = round(palette.tile_radius * self.scale)
+        s = self.scale
+        radius = round(palette.tile_radius * s)
         outline = ink if self.focused or self.selected else border
         paint_smooth_rect(self, 1, 1, width - 2, height - 2, radius, surface, outline)
-        x, y, s = pad, round(12 * self.scale), self.scale
-        folder = icon(self, "folder", round(25 * s), palette.ink)
-        self.create_image(x - round(2 * s), y - round(4 * s), anchor="nw", image=folder)
-        text_width = width - 2 * pad
-        if self.hint:
-            hint_width = text_width - round(27 * s)
-            self.create_text(width - pad, y + round(9 * s),
-                             text=shorten(self.hint, self.small_font, hint_width),
-                             anchor="e", font=self.small_font, fill=palette.muted)
-        name = two_line_text(self.title, self.title_font, text_width)
-        title_item = self.create_text(pad, self.title_top, text=name, anchor="nw",
-                                      font=self.title_font, fill=palette.ink,
-                                      tags=("project-title",))
-        title_bottom = self.bbox(title_item)[3]
-        badge_center = title_bottom + self.title_badge_gap + self.badge_height / 2
-        self.paint_status_badge(pad, badge_center, surface, border, ink)
 
-    def paint_status_badge(self, left, center, fill, border, ink):
+        pad, folder_size = self.padding, self.folder_size
+        folder_top = (height - folder_size) // 2
+        folder_bg = self.FOLDER_BACKGROUNDS[self.status]
+        paint_smooth_rect(self, pad, folder_top, folder_size, folder_size,
+                          round(8 * s), folder_bg, folder_bg, tag="folder-background")
+        folder = icon(self, "folder", round(22 * s), palette.ink)
+        self.create_image(pad + folder_size // 2, folder_top + folder_size // 2, image=folder)
+
+        text_left = pad + folder_size + round(8 * s)
+        text_width = width - text_left - pad
+        name = two_line_text(self.title, self.title_font, text_width, prefer_word_break=True)
+        title_height = (name.count("\n") + 1) * self.title_font.metrics("linespace")
+        text_height = title_height + self.title_badge_gap + self.badge_height
+        title_top = (height - text_height) // 2
+        self.create_text(text_left, title_top, text=name, anchor="nw", font=self.title_font,
+                         fill=palette.ink, tags=("project-title",))
+        badge_center = title_top + text_height - self.badge_height / 2
+        self.paint_status_badge(text_left, badge_center, text_width, surface, border, ink)
+
+    def paint_status_badge(self, left, center, width, fill, border, ink):
         s = self.scale
         text_offset = round(18 * s)
         padding = text_offset + round(7 * s)
-        available = self.winfo_width() - 2 * left - padding
-        caption = shorten(self.caption, self.small_font, available)
+        caption = shorten(self.caption, self.small_font, width - padding)
         right = left + padding + self.small_font.measure(caption)
         radius = self.badge_height / 2
         paint_smooth_rect(self, left, round(center - radius), right - left,
@@ -321,12 +332,12 @@ class ProjectCard(tk.Canvas):
 
 
 class SessionCard(tk.Canvas):
-    def __init__(self, parent, thread, scale, title_font, detail_font, command):
+    def __init__(self, parent, thread, title, scale, title_font, detail_font, command):
         self.palette = palette = ORANGE
         super().__init__(parent, bg=palette.card, bd=0, highlightthickness=0, width=1, height=1,
                          cursor="hand2", takefocus=True)
         tr = translator_for(parent)
-        self.title = thread_title(thread, tr)
+        self.title = title
         self.when = datetime.fromtimestamp(thread["updated"] / 1000).strftime("%m-%d %H:%M")
         status = thread["status"]
         self.caption = tr("status.unread_completed" if thread["unread_completed"] else f"status.{status}")
@@ -346,9 +357,8 @@ class SessionCard(tk.Canvas):
         self.scale = scale
         self.title_font = title_font
         self.detail_font = detail_font
-        self.title_top = round(14 * scale)
-        self.status_offset = round(9 * scale)
-        self.time_gap = max(1, round(4 * scale))
+        self.padding = round(8 * scale)
+        self.metadata_gap = round(4 * scale)
         self.command = command
         self.hovered = False
         self.focused = False
@@ -378,10 +388,8 @@ class SessionCard(tk.Canvas):
         self.paint()
 
     def compact_height(self):
-        title_bottom = self.title_top + 2 * self.title_font.metrics("linespace")
-        detail_height = self.detail_font.metrics("linespace")
-        status_bottom = title_bottom + self.status_offset + (detail_height + 1) // 2
-        return status_bottom + self.time_gap + detail_height + round(9 * self.scale)
+        return (2 * self.padding + 2 * self.title_font.metrics("linespace")
+                + self.metadata_gap + self.detail_font.metrics("linespace"))
 
     def paint(self):
         self.delete("all")
@@ -390,20 +398,27 @@ class SessionCard(tk.Canvas):
             return
         s = self.scale
         palette = self.palette
-        pad = round(10 * s)
-        width = card_width - 2 * pad
+        pad = self.padding
         radius = round((palette.tile_radius - 3) * s)
         surface = self.hover_fill if self.hovered else self.fill
         outline = palette.accent if self.hovered or self.focused else self.border
         paint_smooth_rect(self, 1, 1, card_width - 2, height - 2, radius, surface, outline)
-        name = two_line_text(self.title, self.title_font, width)
-        title_end = self.title_top + (name.count("\n") + 1) * self.title_font.metrics("linespace")
-        status_y = title_end + self.status_offset
-        status_dot(self, pad, status_y, s, self.status_ink)
-        status = self.create_text(pad + round(10 * s), status_y, anchor="w", font=self.detail_font,
-                                  text=self.caption, fill=self.status_ink, tags=("session-status",))
-        self.create_text(pad, self.title_top, text=name, anchor="nw", font=self.title_font,
+        chat_size = round(16 * s)
+        chat = icon(self, "chat", chat_size, palette.ink)
+        self.create_image(pad, pad, anchor="nw", image=chat, tags=("session-icon",))
+        title_x = pad + chat_size + round(5 * s)
+        name = two_line_text(self.title, self.title_font, card_width - title_x - pad,
+                             prefer_word_break=True)
+        self.create_text(title_x, pad, text=name, anchor="nw", font=self.title_font,
                          fill=palette.ink, tags=("session-title",))
-        time_top = self.bbox(status)[3] + self.time_gap
-        self.create_text(pad, time_top, text=self.when, anchor="nw", font=self.detail_font,
+
+        metadata_y = height - pad - self.detail_font.metrics("linespace") // 2
+        status_dot(self, pad, metadata_y, s, self.status_ink)
+        status_x = pad + round(10 * s)
+        time_x = card_width - pad
+        status_width = time_x - status_x - self.detail_font.measure(self.when) - round(8 * s)
+        self.create_text(status_x, metadata_y, anchor="w", font=self.detail_font,
+                         text=shorten(self.caption, self.detail_font, status_width),
+                         fill=self.status_ink, tags=("session-status",))
+        self.create_text(time_x, metadata_y, text=self.when, anchor="e", font=self.detail_font,
                          fill=palette.muted, tags=("session-time",))

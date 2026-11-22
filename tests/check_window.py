@@ -94,6 +94,10 @@ def check_large_project(window, thread):
         assert "large-299" not in popup.links
         first = popup.links["large-0"]
         until(root, lambda: root.focus_get() is first)
+        first.event_generate("<Tab>")
+        until(root, lambda: root.focus_get() is popup.links["large-1"])
+        popup.links["large-1"].event_generate("<Shift-Tab>")
+        until(root, lambda: root.focus_get() is first)
         first.event_generate("<Shift-Tab>")
         until(root, lambda: "large-299" in popup.links and root.focus_get() is popup.links["large-299"])
         last = popup.links["large-299"]
@@ -115,6 +119,22 @@ def check_large_project(window, thread):
             startfile.assert_called_once_with("codex://threads/large-299")
             until(root, lambda: refresh_threads.called and window.pending is None)
         assert window.popup is None
+
+        left, _, right, _ = screen_box(root)
+        _, top, _, bottom = work_area(root)
+        for side_width, columns in ((400, 2), (280, 1)):
+            area = left, top, right + round(side_width * window.scale), bottom
+            with patch("window.work_area", return_value=area):
+                window.open_project_with_keyboard(card, group)
+                popup = window.popup
+                assert popup.columns == columns
+                first = popup.links["large-0"]
+                next_row = popup.links[f"large-{columns}"]
+                canvas = popup.page.canvas
+                x0, y0 = canvas.coords(first.window_item)
+                x1, y1 = canvas.coords(next_row.window_item)
+                assert x0 == x1 and y1 > y0
+            window.dismiss_project()
     finally:
         window.dismiss_project()
 
@@ -124,14 +144,28 @@ def check_languages(store, threads, settings):
     window = StickyWindow(root, store, lambda: threads, settings_path=settings)
     try:
         until(root, lambda: window.threads is not None and window.thread_list.winfo_ismapped())
-        x, y, _, _ = screen_box(root)
-        narrow_width = root.minsize()[0]
-        set_window_bounds(root, x, y, narrow_width, root.winfo_height())
-        until(root, lambda: root.winfo_width() <= narrow_width + 24)
+        header = root.winfo_children()[0].winfo_children()[0]
+        title = next(child for child in header.winfo_children() if isinstance(child, tk.Label))
+        art = next(child for child in header.winfo_children() if isinstance(child, tk.Canvas))
+        header_height = header.winfo_height()
+        title_size = tkfont.Font(root, font=title["font"]).cget("size")
         window.entry.insert(0, "保留草稿")
         window.entry.icursor(2)
         window.language_menu.invoke(2)
         until(root, lambda: root.title() == "Codex Sticky Notes")
+        assert header.winfo_height() == header_height
+        assert tkfont.Font(root, font=title["font"]).cget("size") == title_size == 16
+        assert abs(center(title)[1] - center(window.pin_control)[1]) <= 1
+        assert window.pin_control.master.master is header
+        close_button = next(child for child in window.pin_control.master.winfo_children()
+                            if isinstance(child, tk.Button) and widget_text(child) == "Close")
+        assert screen_box(close_button)[2] <= screen_box(art)[0]
+        x, y, _, _ = screen_box(root)
+        narrow_width = root.minsize()[0]
+        set_window_bounds(root, x, y, narrow_width, root.winfo_height())
+        until(root, lambda: root.winfo_width() <= narrow_width + 24)
+        assert screen_box(window.pin_control)[1] >= screen_box(title)[3]
+        assert tkfont.Font(root, font=title["font"]).cget("size") == title_size
         assert load_language(settings) == "en"
         assert window.entry.get() == "保留草稿" and window.entry.index("insert") == 2
         assert widget_text(window.collapse_button) == "Collapse"
@@ -140,8 +174,6 @@ def check_languages(store, threads, settings):
         assert window.project_cards["one"].title == "示例应用"
         group = next(group for group in group_threads(window.threads) if group["key"] == "one")
         assert window.project_cards["one"].caption == f"To review {group['unread']}"
-        close_button = next(child for child in window.pin_control.master.winfo_children()
-                            if isinstance(child, tk.Button) and widget_text(child) == "Close")
         for control in (window.pin_control, window.collapse_button, window.language_menu.master,
                         close_button, window.task_freeze_switch, window.count):
             assert control.winfo_viewable() and control.winfo_width() >= control.winfo_reqwidth()
@@ -156,6 +188,7 @@ def check_languages(store, threads, settings):
                 assert card.bbox("session-status")[2] < card.winfo_width()
         window.language_menu.invoke(1)
         until(root, lambda: root.title() == "Codex 便签")
+        assert screen_box(window.pin_control)[1] >= screen_box(title)[3]
         assert load_language(settings) == "zh-CN"
         assert window.entry.get() == "保留草稿"
         assert widget_text(window.task_freeze_switch) == "固定待办"
@@ -176,8 +209,9 @@ def check_languages(store, threads, settings):
 
 def check_window(store):
     now = int(time.time() * 1000)
+    long_session_title = "整理会话进展和显示方式以及窗口布局的详细记录" * 2
     threads = [
-        dict(id="one", title="整理会话进展和显示方式", updated=now - 30,
+        dict(id="one", title=f"示例应用 · {long_session_title}", updated=now - 30,
              status="completed", unread_completed=True, unread=True,
              project_key="one", project="示例应用",
              project_path="D:/One"),
@@ -193,14 +227,17 @@ def check_window(store):
              project_key="read", project="资料", project_path="D:/Read"),
         dict(id="unknown", title="核对进度", updated=now - 75,
              status="stale", unread_completed=False, unread=None,
-             project_key="unknown", project="进度", project_path="D:/Unknown"),
+             project_key="unknown", project="资料", project_path="D:/Unknown"),
     ]
-    older_ids = [f"older-{index}" for index in range(12)]
+    older_ids = [f"older-{index}" for index in range(24)]
     older_statuses = {"older-0": ("failed", False), "older-1": ("completed", None),
                       "older-2": ("interrupted", False)}
+    older_titles = {"older-0": "其他项目 · 迁移到示例应用",
+                    "older-1": "检查示例应用的设置", "older-2": "示例应用 ·"}
     for index, thread_id in enumerate(older_ids):
         status, unread = older_statuses.get(thread_id, ("completed", False))
-        threads.append(dict(threads[0], id=thread_id, title=f"较早的会话 {index + 1}",
+        threads.append(dict(threads[0], id=thread_id,
+                            title=older_titles.get(thread_id, f"较早的会话 {index + 1}"),
                             updated=now - 100 - index, status=status, unread=unread,
                             unread_completed=False))
     root = tk.Tk()
@@ -263,13 +300,18 @@ def check_window(store):
         controls = (window.pin_control, window.collapse_button, window.language_menu.master, close_button)
         assert all(screen_box(left)[2] <= screen_box(right)[0] for left, right in zip(controls, controls[1:]))
         assert len({center(control)[1] for control in controls}) == 1
-        check_antialiased_corners(window.pin_control.master.master.canvas, "surface")
         assert window.thread_list["bg"] == ORANGE.card
         assert window.entry_hint.winfo_ismapped() and not window.entry.get()
         assert window.entry.master.winfo_height() >= round(35 * window.scale)
         entry_shell = window.entry.master
         add_button = next(child for child in entry_shell.master.winfo_children()
                           if isinstance(child, PillButton))
+        assert tkfont.Font(root, font=add_button.control["font"]).cget("size") == 8
+        for panel, caption in ((window.task_list.master, "待办"),
+                               (window.thread_list.master, "项目会话")):
+            panel_title = next(child for row in panel.winfo_children() for child in row.winfo_children()
+                               if isinstance(child, tk.Label) and widget_text(child) == caption)
+            assert tkfont.Font(root, font=panel_title["font"]).cget("size") == 13
         for surface in (entry_shell, add_button, window.task_list.master.master,
                         window.thread_list.master.master):
             check_antialiased_corners(surface.canvas, "surface")
@@ -301,10 +343,15 @@ def check_window(store):
 
         assert list(window.project_cards) == ["one", "two", "read", "unknown"]
         one, two, read, unknown = window.project_cards.values()
+        assert read.title == unknown.title == "资料"
+        for card in (read, unknown):
+            texts = [card.itemcget(item, "text") for item in card.find_all() if card.type(item) == "text"]
+            assert texts == [card.title, card.caption]
         assert len({card.status for card in (one, two, read, unknown)}) == 4
         for card in window.project_cards.values():
             check_antialiased_corners(card, "surface")
             check_antialiased_corners(card, "status-badge")
+            check_antialiased_corners(card, "folder-background")
             expected = ("#AEE1BC", "#F7EEEA", "#FFD77D", "#D5D8EF")
             index = ("running", "read", "unread", "unknown").index(card.status)
             for tag in ("surface", "status-badge"):
@@ -315,17 +362,22 @@ def check_window(store):
                     assert fills[0] == ORANGE.project_colors[card.status][0]
         assert one.winfo_rootx() < two.winfo_rootx() < read.winfo_rootx()
         assert one.winfo_rooty() == two.winfo_rooty() == read.winfo_rooty()
-        assert unknown.winfo_rooty() == one.winfo_rooty()
+        assert unknown.winfo_rooty() > one.winfo_rooty()
+        assert unknown.winfo_rootx() == one.winfo_rootx()
+        assert screen_box(read)[2] <= screen_box(window.thread_list)[2]
         assert one.winfo_height() < one.winfo_width()
+        assert all(card.winfo_height() == one.winfo_height() for card in window.project_cards.values())
         for card, line_count in ((one, 1), (two, 2)):
             title_item, = card.find_withtag("project-title")
             assert card.itemcget(title_item, "text").count("\n") + 1 == line_count
-            corner = next(item for item in card.find_withtag("status-badge")
-                          if card.type(item) == "image")
-            gap = card.coords(corner)[1] - card.bbox(title_item)[3]
-            assert gap == max(1, round(3 * window.scale))
-            assert card.bbox("status-badge")[3] < card.winfo_height()
-        assert sum(one.type(item) == "image" for item in one.find_all()) == 10
+            _, folder_top, folder_right, folder_bottom = card.bbox("folder-background")
+            title_left, title_top, title_right, title_bottom = card.bbox(title_item)
+            badge_left, badge_top, badge_right, badge_bottom = card.bbox("status-badge")
+            assert folder_right < title_left <= badge_left
+            assert title_top < folder_bottom and folder_top < title_bottom
+            assert badge_top > title_bottom
+            assert badge_bottom < card.winfo_height()
+            assert max(title_right, badge_right) < card.winfo_width()
         assert one.title_font.cget("size") == 9 and one.small_font.cget("size") == 7
         width = root.winfo_width()
         middle = root.winfo_height() // 2
@@ -338,6 +390,7 @@ def check_window(store):
         original_width, original_height = root.winfo_width(), root.winfo_height()
         resize(root.minsize()[0], original_height)
         until(root, lambda: read.winfo_rooty() > one.winfo_rooty())
+        assert two.winfo_rooty() == one.winfo_rooty()
         assert read.winfo_rootx() == one.winfo_rootx()
         assert title.winfo_ismapped() and close_button.winfo_ismapped() and art.winfo_ismapped()
         assert screen_box(controls[0])[1] >= screen_box(title)[3]
@@ -410,6 +463,7 @@ def check_window(store):
         point_at(read)
         until(root, lambda: window.popup is not None and window.popup.winfo_viewable())
         assert window.popup.links["read"].title == "刷新后的标题"
+        assert window.popup.path_label["text"] == "D:/Read"
         point_at(window.entry)
         until(root, lambda: window.popup is None)
         threads = original_threads
@@ -423,6 +477,13 @@ def check_window(store):
         assert popup.links["one"]["bg"] == palette.card
         assert list(popup.links) == ["running", "one", *older_ids][:len(popup.links)]
         first, second = popup.links["running"], popup.links["one"]
+        third, fourth = popup.links["older-0"], popup.links["older-1"]
+        assert first.title == "检查新版本"
+        assert second.title == long_session_title
+        for thread_id, title in older_titles.items():
+            assert popup.links[thread_id].title == title
+        check_window_overlay(popup, popup.rounded_window)
+        overlay = popup.rounded_window.overlay
         expected = {"running": "#AEE1BC", "one": "#FFD77D", "older-0": "#F7EEEA",
                     "older-1": "#D5D8EF", "older-2": "#F7EEEA", "older-3": "#F7EEEA"}
         for thread_id, fill in expected.items():
@@ -436,15 +497,22 @@ def check_window(store):
         assert first.winfo_height() < first.winfo_width()
         for card, line_count in ((first, 1), (second, 2)):
             title, = card.find_withtag("session-title")
+            icon_box = card.bbox("session-icon")
+            assert icon_box[2] < card.bbox(title)[0]
             assert card.itemcget(title, "text").count("\n") + 1 == line_count
-            status_bottom = card.bbox("session-status")[3]
+            status_box = card.bbox("session-status")
             time_box = card.bbox("session-time")
-            assert time_box[1] - status_bottom == max(1, round(4 * window.scale))
+            assert status_box[1] == time_box[1]
+            assert status_box[2] < time_box[0]
+            assert card.bbox(title)[3] < time_box[1]
             assert time_box[3] < card.winfo_height()
         assert second.winfo_width() == first.winfo_width()
-        assert second.winfo_height() == first.winfo_height()
-        assert first.winfo_rooty() == second.winfo_rooty()
-        assert first.winfo_rootx() < second.winfo_rootx()
+        assert first.winfo_height() == second.winfo_height() == third.winfo_height()
+        assert first.winfo_rooty() == second.winfo_rooty() == third.winfo_rooty()
+        assert first.winfo_rootx() < second.winfo_rootx() < third.winfo_rootx()
+        assert screen_box(first)[3] < fourth.winfo_rooty()
+        assert first.winfo_rootx() == fourth.winfo_rootx()
+        assert first.bbox("session-time")[2] == second.bbox("session-time")[2]
         assert (popup.winfo_rootx() >= one.winfo_rootx() + one.winfo_width()
                 or popup.winfo_rootx() + popup.winfo_width() <= one.winfo_rootx())
         left, _, right, _ = work_area(one)
@@ -471,6 +539,7 @@ def check_window(store):
         assert window.popup is popup
         point_at(window.entry)
         until(root, lambda: window.popup is None)
+        assert not user32.IsWindowVisible(overlay)
         one, two, read, _ = window.project_cards.values()
         assert one.status == two.status != read.status
 

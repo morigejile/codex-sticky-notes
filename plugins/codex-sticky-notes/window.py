@@ -6,10 +6,8 @@ import sqlite3
 import sys
 import time
 import tkinter as tk
-from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from ctypes import wintypes
-from pathlib import PurePosixPath, PureWindowsPath
 from tkinter import messagebox, simpledialog, ttk
 from tkinter import font as tkfont
 
@@ -19,9 +17,11 @@ from appearance import (
 )
 from data import (
     APP_HOME, TaskInputError, TaskNotFoundError, TaskStore,
-    group_threads, project_path_module, read_project_threads,
+    group_threads, read_project_threads,
 )
-from i18n import LANGUAGE_CHOICES, Translator, load_language, project_name, save_language, translator_for
+from i18n import (
+    LANGUAGE_CHOICES, Translator, load_language, project_name, save_language, thread_title, translator_for,
+)
 from launch import open_thread_link
 from note_art import load_note_art
 from note_icons import icon
@@ -70,19 +70,6 @@ def within(widget, parent):
             return True
         widget = widget.master
     return False
-
-
-def distinguishing_folder(path, others):
-    path_module = project_path_module(path)
-    path_type = PureWindowsPath if path_module.sep == "\\" else PurePosixPath
-    parts = path_type(path).parts
-    peers = [path_type(path_module.normcase(other)).parts
-             for other in others if other != path]
-    normalized = path_type(path_module.normcase(path)).parts
-    for length in range(1, len(parts) + 1):
-        if all(peer[-length:] != normalized[-length:] for peer in peers):
-            return str(path_type(*parts[-length:]))
-    return path
 
 
 def popup_background(widget, fallback):
@@ -337,8 +324,7 @@ class ScrollPage(tk.Frame):
 
 
 class ProjectPopup(tk.Toplevel):
-    PAGE_INSET = 10
-    TILE_PADDING = 3
+    GRID_WIDTH = 524
 
     def __init__(self, root, anchor, group, scale, open_thread):
         super().__init__(root)
@@ -347,7 +333,16 @@ class ProjectPopup(tk.Toplevel):
         self.withdraw()
         self.overrideredirect(True)
         self.attributes("-topmost", True)
-        outside = popup_background(self, palette.card)
+        radius = round(17 * scale)
+        border = palette.popup_border
+        if WINDOWS:
+            outside = border
+            self.rounded_window = RoundedWindow(self, radius, corner_colors=lambda: (outside, outside))
+            # Windows blends the outer contour. The inset surface paints the inside of the rim.
+            radius -= 1
+            border = palette.card
+        else:
+            outside = popup_background(self, palette.card)
         self.configure(bg=outside)
         self.anchor = anchor
         self.scale = scale
@@ -355,6 +350,8 @@ class ProjectPopup(tk.Toplevel):
         self.uses_outer_edge = False
         self.content_width = None
         self.sessions = group["threads"]
+        self.session_titles = [thread_title(thread, self.notes_tr, hide_project=True)
+                               for thread in self.sessions]
         self.open_thread = open_thread
         self.links = {}
         self.project_title = group["title"]
@@ -363,12 +360,12 @@ class ProjectPopup(tk.Toplevel):
         self.title_font = tkfont.Font(self, font=ui_font(heading_size, "bold"))
         self.path_font = tkfont.Font(self, font=ui_font(8))
         self.card_title_font = tkfont.Font(self, font=ui_font(10, "bold"))
-        shell = RoundedSurface(self, outside=outside, radius=round(17 * scale),
-                               border=palette.popup_border)
+        shell = RoundedSurface(self, outside=outside, radius=radius, border=border, antialias=True)
         shell.pack(fill="both", expand=True)
+        self.page_inset = round(12 * scale)
+        self.header_pady = self.page_inset, round(9 * scale)
         self.header = tk.Frame(shell, bg=palette.card)
-        self.header.pack(fill="x", padx=round(14 * scale),
-                         pady=(round(12 * scale), round(11 * scale)))
+        self.header.pack(fill="x", padx=self.page_inset + round(8 * scale), pady=self.header_pady)
         title_row = tk.Frame(self.header, bg=palette.card)
         title_row.pack(fill="x")
         self.count = label(title_row, self.notes_tr.count("sessions.count", len(self.sessions)), size=9,
@@ -381,8 +378,8 @@ class ProjectPopup(tk.Toplevel):
             self.path_label = label(self.header, "", size=8, color=palette.muted, bg=palette.card)
             self.path_label.pack(fill="x", pady=(2, 0))
         self.page = ScrollPage(shell, bg=palette.card, virtual=True)
-        self.page.pack(fill="both", expand=True, padx=self.PAGE_INSET, pady=(0, 10))
-        self.tile_height = self.make_session_card(0).compact_height()
+        self.page.pack(fill="both", expand=True, padx=self.page_inset, pady=(0, self.page_inset))
+        self.card_height = self.make_session_card(0).compact_height()
         self.place_next_to_anchor()
         self.page.canvas.configure(yscrollcommand=self.update_scrollbar)
         self.deiconify()
@@ -394,7 +391,8 @@ class ProjectPopup(tk.Toplevel):
         thread = self.sessions[index]
         thread_id = thread["id"]
         canvas = self.page.canvas
-        card = SessionCard(canvas, thread, self.scale, self.card_title_font, self.path_font,
+        card = SessionCard(canvas, thread, self.session_titles[index],
+                           self.scale, self.card_title_font, self.path_font,
                            lambda: self.open_thread(thread_id))
         card.window_item = canvas.create_window(0, 0, window=card, anchor="nw")
         card.bind("<FocusIn>", lambda _: self.reveal_session(index), add="+")
@@ -404,11 +402,11 @@ class ProjectPopup(tk.Toplevel):
         return card
 
     def place_session_card(self, index, card):
-        row, column = divmod(index, self.columns)
-        x = self.TILE_PADDING + column * (self.tile_width + self.tile_gap)
         canvas = self.page.canvas
-        canvas.coords(card.window_item, x, row * self.row_height)
-        canvas.itemconfigure(card.window_item, width=self.tile_width, height=self.tile_height)
+        row, column = divmod(index, self.columns)
+        canvas.coords(card.window_item, column * (self.card_width + self.card_gap),
+                      row * self.row_height)
+        canvas.itemconfigure(card.window_item, width=self.card_width, height=self.card_height)
 
     def session_card(self, index):
         card = self.links.get(self.sessions[index]["id"])
@@ -431,7 +429,7 @@ class ProjectPopup(tk.Toplevel):
             self.session_card(index)
 
     def reveal_session(self, index):
-        self.page.reveal((index // self.columns) * self.row_height, self.tile_height)
+        self.page.reveal((index // self.columns) * self.row_height, self.card_height)
 
     def focus_session(self, index):
         index %= len(self.sessions)
@@ -440,6 +438,32 @@ class ProjectPopup(tk.Toplevel):
         card.update_idletasks()
         card.focus_force()
         return "break"
+
+    def size_content(self, width):
+        self.content_width = width
+        header_width = width - 2 * (self.page_inset + round(8 * self.scale))
+        title_width = max(1, header_width - self.count.winfo_reqwidth() - 8)
+        self.title_label.configure(text=two_line_text(self.project_title, self.title_font, title_width))
+        if self.path_label is not None:
+            self.path_label.configure(text=two_line_text(
+                self.project_path, self.path_font, max(1, header_width)))
+
+        viewport_width = max(1, width - self.page.bar.winfo_reqwidth() - 2 * self.page_inset)
+        self.columns, self.card_width, self.card_gap = tile_dimensions(
+            viewport_width, self.scale, gap=8, target=150, maximum=self.GRID_WIDTH,
+            column_limit=min(3, len(self.sessions)))
+        self.row_height = self.card_height + self.card_gap
+        rows = (len(self.sessions) + self.columns - 1) // self.columns
+        self.list_height = rows * self.row_height - self.card_gap
+        canvas = self.page.canvas
+        bounds = (0, 0, viewport_width, self.list_height)
+        canvas.coords(self.page.content, *bounds)
+        canvas.configure(scrollregion=bounds)
+        for index, thread in enumerate(self.sessions):
+            card = self.links.get(thread["id"])
+            if card is not None:
+                self.place_session_card(index, card)
+        self.update_idletasks()
 
     def place_next_to_anchor(self):
         box = screen_box(self.anchor)
@@ -451,10 +475,7 @@ class ProjectPopup(tk.Toplevel):
         left, top, right, bottom = work_area(self.anchor)
         x0, y0, x1, y1 = box
         gap = round(8 * self.scale)
-        columns = min(3, len(self.sessions))
-        tile_size, width_limit = 110, 376
-        preferred = round(min(width_limit, 34 + tile_size * columns + 8 * (columns - 1))
-                          * self.scale)
+        preferred = round((self.GRID_WIDTH if len(self.sessions) >= 3 else 350) * self.scale)
         min_width = min(preferred, round(245 * self.scale))
         outer_left = root_left - left - gap
         outer_right = right - root_right - gap
@@ -481,31 +502,8 @@ class ProjectPopup(tk.Toplevel):
             max_height = max(1, min(max_height, max(down, up)))
 
         if width != self.content_width:
-            # Set the header and tile sizes before measuring the popup.
-            self.content_width = width
-            title_width = max(70, width - self.count.winfo_reqwidth() - 42)
-            self.title_label.configure(text=two_line_text(
-                self.project_title, self.title_font, title_width))
-            if self.path_label is not None:
-                self.path_label.configure(text=two_line_text(
-                    self.project_path, self.path_font, max(70, width - 32)))
-            viewport_width = width - self.page.bar.winfo_reqwidth() - 2 * self.PAGE_INSET
-            self.columns, self.tile_width, self.tile_gap = tile_dimensions(
-                viewport_width - 2 * self.TILE_PADDING, self.scale, gap=8, target=98,
-                maximum=tile_size + 4, column_limit=columns)
-            self.row_height = self.tile_height + self.tile_gap
-            row_count = (len(self.sessions) + self.columns - 1) // self.columns
-            self.list_height = row_count * self.row_height
-            canvas = self.page.canvas
-            bounds = (0, 0, viewport_width, self.list_height)
-            canvas.coords(self.page.content, *bounds)
-            canvas.configure(scrollregion=bounds)
-            for index, thread in enumerate(self.sessions):
-                card = self.links.get(thread["id"])
-                if card is not None:
-                    self.place_session_card(index, card)
-            self.update_idletasks()
-        padding = round(34 * self.scale)
+            self.size_content(width)
+        padding = sum(self.header_pady) + self.page_inset
         height = min(max_height, self.header.winfo_reqheight() + self.list_height + padding)
         if side_space >= min_width:
             top_offset = round(36 * self.scale)
@@ -669,10 +667,7 @@ class StickyWindow:
     def make_header_controls(self, parent):
         palette = self.palette
         scale = self.scale
-        toolbar = RoundedSurface(parent, outside=palette.hero, fill=palette.hero,
-                                 radius=round(18 * scale), border=palette.hero_border, antialias=True)
-        row = tk.Frame(toolbar, bg=palette.hero)
-        row.pack(padx=round(7 * scale), pady=round(4 * scale))
+        row = tk.Frame(parent, bg=palette.hero, pady=round(4 * scale))
         row.rowconfigure(0, minsize=round(28 * scale))
         padding = round(5 * scale)
         self.pin_control = tk.Checkbutton(
@@ -698,11 +693,7 @@ class StickyWindow:
                 textvariable=self.text("action.close"), padx=0, pady=0)
             close_button.bind("<Return>", lambda _: close_button.invoke())
             close_button.grid(row=0, column=4, sticky="nsew")
-        if WINDOWS:
-            for area in (toolbar.canvas, row):
-                area.configure(cursor="fleur")
-                area.bind("<ButtonPress-1>", self.drag_header)
-        return toolbar
+        return row
 
     def make_header(self):
         if WINDOWS:
@@ -713,7 +704,7 @@ class StickyWindow:
         top = tk.Frame(hero, bg=palette.hero)
         top.pack(fill="x", padx=round(24 * self.scale), pady=round(5 * self.scale))
         top.columnconfigure(2, weight=1)
-        title = label(top, "", size=24, weight="bold", bg=palette.hero,
+        title = label(top, "", size=17, weight="bold", bg=palette.hero,
                       textvariable=self.text("app.heading"))
         controls = self.make_header_controls(top)
 
@@ -726,7 +717,17 @@ class StickyWindow:
         else:
             art.create_image((size + 12) // 2, size // 2, image=self.hero_image)
 
-        gap = round(14 * self.scale)
+        gap = round(10 * self.scale)
+        heading_font = tkfont.Font(top, font=title["font"])
+        control_font = tkfont.Font(top, font=ui_font(10))
+        languages = [Translator(choice) for choice in LANGUAGE_CHOICES if choice != "system"]
+        control_keys = ("action.pin", "action.collapse", "language.menu")
+        text_widths = {
+            tr.language: heading_font.measure(tr("app.heading"))
+            + sum(control_font.measure(tr(key)) for key in control_keys)
+            for tr in languages
+        }
+        widest_text = max(text_widths.values())
         stacked = False
         title.grid(row=0, column=0, sticky="w")
         controls.grid(row=0, column=1, sticky="w", padx=(gap, 0))
@@ -734,8 +735,11 @@ class StickyWindow:
 
         def arrange_masthead(event=None):
             nonlocal stacked
-            single_row_width = sum(widget.winfo_reqwidth() for widget in (title, controls, art))
-            narrow = (event.width if event else top.winfo_width()) < single_row_width + gap
+            width = event.width if event else top.winfo_width()
+            # Use the same wrapping threshold for both translations.
+            single_row_width = (title.winfo_reqwidth() + controls.winfo_reqwidth() + art.winfo_reqwidth()
+                                + gap + widest_text - text_widths[self.tr.language])
+            narrow = width < single_row_width
             if narrow == stacked:
                 return
             stacked = narrow
@@ -817,7 +821,7 @@ class StickyWindow:
         panel_bg = task_panel["bg"]
         heading = tk.Frame(task_panel, bg=panel_bg)
         heading.pack(fill="x", pady=(0, round(14 * self.scale)))
-        label(heading, "", size=16, weight="bold",
+        label(heading, "", size=14, weight="bold",
               bg=panel_bg, textvariable=self.text("todo.heading")).pack(side="left")
         self.count = label(heading, "", color=palette.muted,
                            size=11, bg=panel_bg)
@@ -833,7 +837,6 @@ class StickyWindow:
         add_button = PillButton(entry_row, "", self.add_task, outside=panel_bg,
                                 radius=round(10 * self.scale))
         add_button.control.configure(textvariable=self.text("todo.add"))
-        add_button.control.configure(font=ui_font(11, "bold"))
         add_button.control.pack_configure(padx=round(21 * self.scale),
                                           pady=round(8 * self.scale))
         add_button.pack(side="right", padx=(round(9 * self.scale), 0))
@@ -937,7 +940,7 @@ class StickyWindow:
         panel_bg = thread_panel["bg"]
         heading = tk.Frame(thread_panel, bg=panel_bg)
         heading.pack(fill="x", pady=(0, round(12 * self.scale)))
-        label(heading, "", size=16, weight="bold",
+        label(heading, "", size=14, weight="bold",
               bg=panel_bg, textvariable=self.text("projects.heading")).pack(side="left")
         refresh = icon(heading, "refresh", round(18 * self.scale), palette.muted)
         text_button(heading, "", self.refresh_threads, bg=panel_bg, fg=palette.muted,
@@ -1143,23 +1146,17 @@ class StickyWindow:
             self.empty_projects.grid_remove()
         else:
             self.empty_projects.grid(sticky="w")
-        paths = defaultdict(list)
-        for group in groups:
-            if group["subtitle"]:
-                paths[group["title"]].append(group["subtitle"])
         old_cards = self.project_cards
         cards = {}
         for group in groups:
             key = group["key"]
-            hint = (distinguishing_folder(group["subtitle"], paths[group["title"]])
-                    if group["subtitle"] else "")
             status = group["status"]
             caption = self.tr(f"project.{status}", count=group.get(status))
             card = old_cards.get(key)
             if card is None:
-                card = self.make_project_card(key, group["title"], hint, status, caption)
+                card = self.make_project_card(key, group["title"], status, caption)
             else:
-                card.update_content(group["title"], hint, status, caption)
+                card.update_content(group["title"], status, caption)
             cards[key] = card
         self.project_cards = cards
         for key in old_cards.keys() - cards.keys():
@@ -1171,8 +1168,8 @@ class StickyWindow:
             self.layout_project_cards(self.thread_list.winfo_width())
         self.set_thread_feedback(None)
 
-    def make_project_card(self, key, title, hint, status, caption):
-        card = ProjectCard(self.thread_list, title, hint, status, caption, self.scale)
+    def make_project_card(self, key, title, status, caption):
+        card = ProjectCard(self.thread_list, title, status, caption, self.scale)
         for sequence in ("<Return>", "<space>"):
             card.bind(sequence, lambda _: self.open_project_with_keyboard(card, self.project_groups[key]))
         card.bind("<Enter>", lambda _: self.schedule_project_hover(card, key))
@@ -1184,11 +1181,11 @@ class StickyWindow:
         if not cards or width < 2:
             return
         height = next(iter(cards)).compact_height()
-        columns, side, gap = tile_dimensions(width, self.scale, gap=9,
-                                             target=98, maximum=145, column_limit=6)
+        columns, card_width, gap = tile_dimensions(width, self.scale, gap=9,
+                                                   target=130, maximum=220, column_limit=3)
         for index, card in enumerate(cards):
             row, column = divmod(index, columns)
-            card.configure(width=side, height=height)
+            card.configure(width=card_width, height=height)
             card.grid(row=row, column=column, padx=(0, gap if column < columns - 1 else 0),
                       pady=(0, gap))
 
