@@ -357,7 +357,7 @@ class SessionCard(tk.Canvas):
         self.scale = scale
         self.title_font = title_font
         self.detail_font = detail_font
-        self.padding = round(8 * scale)
+        self.padding = round(7 * scale)
         self.metadata_gap = round(4 * scale)
         self.command = command
         self.hovered = False
@@ -416,7 +416,7 @@ class SessionCard(tk.Canvas):
         status_dot(self, pad, metadata_y, s, self.status_ink)
         status_x = pad + round(10 * s)
         time_x = card_width - pad
-        status_width = time_x - status_x - self.detail_font.measure(self.when) - round(8 * s)
+        status_width = time_x - status_x - self.detail_font.measure(self.when) - round(4 * s)
         self.create_text(status_x, metadata_y, anchor="w", font=self.detail_font,
                          text=shorten(self.caption, self.detail_font, status_width),
                          fill=self.status_ink, tags=("session-status",))

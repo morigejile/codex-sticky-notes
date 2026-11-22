@@ -122,7 +122,7 @@ def check_large_project(window, thread):
 
         left, _, right, _ = screen_box(root)
         _, top, _, bottom = work_area(root)
-        for side_width, columns in ((400, 2), (280, 1)):
+        for side_width, columns in ((360, 2), (235, 1)):
             area = left, top, right + round(side_width * window.scale), bottom
             with patch("window.work_area", return_value=area):
                 window.open_project_with_keyboard(card, group)
@@ -155,12 +155,12 @@ def check_languages(store, threads, settings):
         until(root, lambda: root.title() == "Codex Sticky Notes")
         assert header.winfo_height() == header_height
         assert tkfont.Font(root, font=title["font"]).cget("size") == title_size == 16
-        assert screen_box(window.pin_control)[1] >= screen_box(title)[3]
+        assert screen_box(title)[2] <= screen_box(window.pin_control)[0]
+        assert abs(center(title)[1] - center(window.pin_control)[1]) <= 1
         assert window.pin_control.master.master is header
         close_button = next(child for child in window.pin_control.master.winfo_children()
                             if isinstance(child, tk.Button) and widget_text(child) == "Close")
-        assert screen_box(close_button)[2] <= screen_box(root)[2]
-        assert screen_box(art)[3] <= screen_box(close_button)[1]
+        assert screen_box(close_button)[2] <= screen_box(art)[0]
         x, y, _, _ = screen_box(root)
         narrow_width = root.minsize()[0]
         set_window_bounds(root, x, y, narrow_width, root.winfo_height())
@@ -294,9 +294,6 @@ def check_window(store):
         assert window.collapse_button["activebackground"] == ORANGE.hero_border
         window.collapse_button.event_generate("<Leave>")
         assert window.collapse_button["bg"] == ORANGE.hero
-        compact_width, compact_height = root.winfo_width(), root.winfo_height()
-        resize(round(510 * window.scale), compact_height)
-        until(root, lambda: abs(center(title)[1] - center(window.pin_control)[1]) <= 1)
         assert title.winfo_rootx() < window.pin_control.winfo_rootx() < art.winfo_rootx()
         assert abs(center(title)[1] - center(window.pin_control)[1]) <= 1
         assert not int(window.pin_control["indicatoron"])
@@ -304,8 +301,6 @@ def check_window(store):
         controls = (window.pin_control, window.collapse_button, window.language_menu.master, close_button)
         assert all(screen_box(left)[2] <= screen_box(right)[0] for left, right in zip(controls, controls[1:]))
         assert len({center(control)[1] for control in controls}) == 1
-        resize(compact_width, compact_height)
-        until(root, lambda: screen_box(controls[0])[1] >= screen_box(title)[3])
         assert window.thread_list["bg"] == ORANGE.card
         assert window.entry_hint.winfo_ismapped() and not window.entry.get()
         assert window.entry.master.winfo_height() >= round(35 * window.scale)
@@ -315,6 +310,9 @@ def check_window(store):
         assert tkfont.Font(root, font=add_button.control["font"]).cget("size") == 8
         for panel, caption in ((window.task_list.master, "待办"),
                                (window.thread_list.master, "项目会话")):
+            left, _, right, _ = screen_box(root)
+            panel_left, _, panel_right, _ = screen_box(panel.master)
+            assert panel_left - left == right - panel_right
             panel_title = next(child for row in panel.winfo_children() for child in row.winfo_children()
                                if isinstance(child, tk.Label) and widget_text(child) == caption)
             assert tkfont.Font(root, font=panel_title["font"]).cget("size") == 13
@@ -422,7 +420,7 @@ def check_window(store):
         assert screen_box(root)[3] - screen_box(canvas)[3] == bottom_inset
         canvas.yview_moveto((1 - canvas.yview()[1]) / 2)
         until(root, lambda: 0 < canvas.yview()[0] < canvas.yview()[1] < 1)
-        check_scroll_corners(canvas, round(13 * window.scale))
+        check_scroll_corners(canvas, int(window.page.body["padx"]))
         canvas.yview_moveto(1)
         until(root, lambda: canvas.yview()[1] == 1)
         assert screen_box(root)[3] - screen_box(canvas)[3] == bottom_inset
@@ -481,6 +479,9 @@ def check_window(store):
         until(root, lambda: window.popup is not None and window.popup.winfo_viewable())
         assert window.popup.links["read"].title == "刷新后的标题"
         assert window.popup.path_label["text"] == "D:/Read"
+        single_width = window.popup.links["read"].winfo_width()
+        assert single_width <= read.winfo_width() + round(14 * window.scale)
+        assert window.popup.winfo_width() <= single_width + round(35 * window.scale)
         point_at(window.entry)
         until(root, lambda: window.popup is None)
         threads = original_threads
@@ -524,6 +525,8 @@ def check_window(store):
             assert card.bbox(title)[3] < time_box[1]
             assert time_box[3] < card.winfo_height()
         assert second.winfo_width() == first.winfo_width()
+        assert first.winfo_width() == single_width
+        assert popup.winfo_width() < root.winfo_width()
         assert first.winfo_height() == second.winfo_height() == third.winfo_height()
         assert first.winfo_rooty() == second.winfo_rooty() == third.winfo_rooty()
         assert first.winfo_rootx() < second.winfo_rootx() < third.winfo_rootx()

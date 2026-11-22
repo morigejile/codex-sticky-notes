@@ -324,8 +324,6 @@ class ScrollPage(tk.Frame):
 
 
 class ProjectPopup(tk.Toplevel):
-    GRID_WIDTH = 524
-
     def __init__(self, root, anchor, group, scale, open_thread):
         super().__init__(root)
         self.notes_tr = translator_for(root)
@@ -363,14 +361,15 @@ class ProjectPopup(tk.Toplevel):
         shell = RoundedSurface(self, outside=outside, radius=radius, border=border, antialias=True)
         shell.pack(fill="both", expand=True)
         self.page_inset = round(12 * scale)
+        self.count_gap = round(5 * scale)
         self.header_pady = self.page_inset, round(9 * scale)
         self.header = tk.Frame(shell, bg=palette.card)
-        self.header.pack(fill="x", padx=self.page_inset + round(8 * scale), pady=self.header_pady)
+        self.header.pack(fill="x", padx=self.page_inset, pady=self.header_pady)
         title_row = tk.Frame(self.header, bg=palette.card)
         title_row.pack(fill="x")
         self.count = label(title_row, self.notes_tr.count("sessions.count", len(self.sessions)), size=9,
                            color=palette.muted, bg=palette.card)
-        self.count.pack(side="right", padx=(8, 0))
+        self.count.pack(side="right", padx=(self.count_gap, 0))
         self.title_label = label(title_row, "", weight="bold", size=heading_size, bg=palette.card)
         self.title_label.pack(side="left", fill="x", expand=True)
         self.path_label = None
@@ -379,6 +378,8 @@ class ProjectPopup(tk.Toplevel):
             self.path_label.pack(fill="x", pady=(2, 0))
         self.page = ScrollPage(shell, bg=palette.card, virtual=True)
         self.page.pack(fill="both", expand=True, padx=self.page_inset, pady=(0, self.page_inset))
+        self.grid_inset = 2 * self.page_inset + self.page.bar.winfo_reqwidth()
+        self.card_gap = round(8 * scale)
         self.card_height = self.make_session_card(0).compact_height()
         self.place_next_to_anchor()
         self.page.canvas.configure(yscrollcommand=self.update_scrollbar)
@@ -441,17 +442,16 @@ class ProjectPopup(tk.Toplevel):
 
     def size_content(self, width):
         self.content_width = width
-        header_width = width - 2 * (self.page_inset + round(8 * self.scale))
-        title_width = max(1, header_width - self.count.winfo_reqwidth() - 8)
+        header_width = width - 2 * self.page_inset
+        title_width = max(1, header_width - self.count.winfo_reqwidth() - self.count_gap)
         self.title_label.configure(text=two_line_text(self.project_title, self.title_font, title_width))
         if self.path_label is not None:
             self.path_label.configure(text=two_line_text(
                 self.project_path, self.path_font, max(1, header_width)))
 
-        viewport_width = max(1, width - self.page.bar.winfo_reqwidth() - 2 * self.page_inset)
-        self.columns, self.card_width, self.card_gap = tile_dimensions(
-            viewport_width, self.scale, gap=8, target=150, maximum=self.GRID_WIDTH,
-            column_limit=min(3, len(self.sessions)))
+        viewport_width = max(1, width - self.grid_inset)
+        self.card_width = min(self.target_card_width, viewport_width)
+        self.columns = (viewport_width + self.card_gap) // (self.card_width + self.card_gap)
         self.row_height = self.card_height + self.card_gap
         rows = (len(self.sessions) + self.columns - 1) // self.columns
         self.list_height = rows * self.row_height - self.card_gap
@@ -474,9 +474,12 @@ class ProjectPopup(tk.Toplevel):
         self.anchor_box = geometry
         left, top, right, bottom = work_area(self.anchor)
         x0, y0, x1, y1 = box
-        gap = round(8 * self.scale)
-        preferred = round((self.GRID_WIDTH if len(self.sessions) >= 3 else 350) * self.scale)
-        min_width = min(preferred, round(245 * self.scale))
+        gap = self.card_gap
+        # Follow the project tile within the range that keeps the metadata readable.
+        self.target_card_width = min(round(136 * self.scale), max(round(132 * self.scale), x1 - x0))
+        widths = [self.grid_inset + count * self.target_card_width + (count - 1) * gap
+                  for count in range(1, min(3, len(self.sessions)) + 1)]
+        min_width = widths[0]
         outer_left = root_left - left - gap
         outer_right = right - root_right - gap
         self.uses_outer_edge = max(outer_left, outer_right) >= min_width
@@ -486,17 +489,19 @@ class ProjectPopup(tk.Toplevel):
         else:
             near_left, near_right = x0, x1
             space_left, space_right = x0 - left - gap, right - x1 - gap
-        # Prefer the closest window edge so the popup covers fewer neighboring tiles.
+        # Prefer the closest window edge unless the other side can show more columns.
         use_right = x0 + x1 >= root_left + root_right
-        if (space_right if use_right else space_left) < min_width:
-            use_right = space_right >= space_left
+        near_space, far_space = (space_right, space_left) if use_right else (space_left, space_right)
+        if any(near_space < candidate <= far_space for candidate in widths):
+            use_right = not use_right
         side_space = space_right if use_right else space_left
         max_height = min(bottom - top, round(448 * self.scale))
-        if side_space >= min_width:
-            width = min(preferred, side_space)
+        beside = side_space >= min_width
+        available = side_space if beside else right - left
+        width = max((candidate for candidate in widths if candidate <= available), default=available)
+        if beside:
             x = near_right + gap if use_right else near_left - width - gap
         else:
-            width = min(preferred, right - left)
             x = min(max(left, x0), right - width)
             down, up = bottom - y1 - gap, y0 - top - gap
             max_height = max(1, min(max_height, max(down, up)))
@@ -505,7 +510,7 @@ class ProjectPopup(tk.Toplevel):
             self.size_content(width)
         padding = sum(self.header_pady) + self.page_inset
         height = min(max_height, self.header.winfo_reqheight() + self.list_height + padding)
-        if side_space >= min_width:
+        if beside:
             top_offset = round(36 * self.scale)
             y = min(max(top, y0 - top_offset), bottom - height)
         else:
@@ -598,11 +603,12 @@ class StickyWindow:
         style.map("Note.Vertical.TScrollbar", background=[("active", self.palette.scroll_hover)])
 
         self.make_header()
-        padding = (round(13 * self.scale), 0)
+        padding = (round(13 * self.scale) - side_inset // 2, 0)
         frame_inset = round(17 * self.scale)
         self.page = ScrollPage(root, padding=padding, bottom_radius=frame_inset)
-        # Keep the curved bottom edge outside the scroll viewport.
-        self.page.pack(fill="both", expand=True, padx=(0, side_inset), pady=(0, frame_inset))
+        # Reserve the same outer space on both sides of the canvas, including the scrollbar.
+        left_inset = side_inset + self.page.bar.winfo_reqwidth()
+        self.page.pack(fill="both", expand=True, padx=(left_inset, side_inset), pady=(0, frame_inset))
         self.task_inset = frame_inset
         self.inline_task_host = tk.Frame(self.page.body, bg=paper)
         self.inline_task_host.pack(fill="x", pady=(self.task_inset, 0))
@@ -626,7 +632,7 @@ class StickyWindow:
         button = tk.Menubutton(
             parent, textvariable=self.text("language.menu"), font=ui_font(10),
             bg=palette.hero, fg=palette.ink, activebackground=palette.hero_border,
-            activeforeground=palette.ink, relief="flat", bd=0, padx=round(5 * self.scale),
+            activeforeground=palette.ink, relief="flat", bd=0, padx=round(2 * self.scale),
             pady=0, takefocus=True, cursor="hand2", highlightthickness=1,
             highlightbackground=palette.hero, highlightcolor=palette.accent,
         )
@@ -673,7 +679,7 @@ class StickyWindow:
         scale = self.scale
         row = tk.Frame(parent, bg=palette.hero, pady=round(4 * scale))
         row.rowconfigure(0, minsize=round(28 * scale))
-        padding = round(5 * scale)
+        padding = round(2 * scale)
         self.pin_control = tk.Checkbutton(
             row, textvariable=self.text("action.pin"), variable=self.pinned, command=self.toggle_pin,
             font=ui_font(10), bg=palette.hero, fg=palette.ink, activebackground=palette.hero_border,
@@ -689,8 +695,8 @@ class StickyWindow:
         self.make_language_menu(row).grid(row=0, column=2, sticky="nsew")
         if WINDOWS:
             separator = tk.Frame(row, bg=palette.hero_border, width=1, height=round(14 * scale))
-            separator.grid(row=0, column=3, padx=round(4 * scale))
-            row.columnconfigure(4, minsize=round(24 * scale))
+            separator.grid(row=0, column=3, padx=round(2 * scale))
+            row.columnconfigure(4, minsize=round(20 * scale))
             close_button = text_button(
                 row, "", self.close, bg=palette.hero, fg=palette.ink, hover_bg=palette.hero_border,
                 image=icon(row, "close", round(16 * scale), palette.ink),
@@ -706,22 +712,23 @@ class StickyWindow:
         hero = tk.Frame(self.root, bg=palette.hero)
         hero.pack(fill="x")
         top = tk.Frame(hero, bg=palette.hero)
-        top.pack(fill="x", padx=round(24 * self.scale), pady=round(5 * self.scale))
+        top.pack(fill="x", padx=round(14 * self.scale), pady=round(5 * self.scale))
         top.columnconfigure(2, weight=1)
         title = label(top, "", size=17, weight="bold", bg=palette.hero,
                       textvariable=self.text("app.heading"))
         controls = self.make_header_controls(top)
 
         size = round(64 * self.scale)
-        art = tk.Canvas(top, width=size + 12, height=size, bg=palette.hero, highlightthickness=0)
-        paint_smooth_rect(art, 9, 4, size - 6, size - 8, size // 2, "#fa9628", "#fa9628")
+        art_width = size + round(4 * self.scale)
+        art = tk.Canvas(top, width=art_width, height=size, bg=palette.hero, highlightthickness=0)
+        paint_smooth_rect(art, 5, 4, art_width - 14, size - 8, size // 2, "#fa9628", "#fa9628")
         self.hero_image = load_note_art(art, size)
         if self.hero_image is None:
             note_mark(art, 0, 0, size / 58, palette.ink)
         else:
-            art.create_image((size + 12) // 2, size // 2, image=self.hero_image)
+            art.create_image(art_width // 2, size // 2, image=self.hero_image)
 
-        gap = round(10 * self.scale)
+        gap = round(6 * self.scale)
         heading_font = tkfont.Font(top, font=title["font"])
         control_font = tkfont.Font(top, font=ui_font(10))
         languages = [Translator(choice) for choice in LANGUAGE_CHOICES if choice != "system"]
