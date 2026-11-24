@@ -33,6 +33,8 @@ MESSAGES = {
     "todo.delete": ("删除", "Delete"),
     "todo.edit_title": ("编辑待办", "Edit todo"),
     "todo.edit_prompt": ("待办内容", "Todo text"),
+    "todo.save": ("保存", "Save"),
+    "todo.cancel": ("取消", "Cancel"),
     "todo.delete_title": ("删除待办", "Delete todo"),
     "todo.delete_prompt": ("删除这条待办？\n\n{text}", "Delete this todo?\n\n{text}"),
     "todo.read_error": ("暂时无法读取本地待办。", "Couldn't read local todos."),

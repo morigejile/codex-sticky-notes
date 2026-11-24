@@ -523,6 +523,99 @@ class ProjectPopup(tk.Toplevel):
         return False
 
 
+class EditTaskDialog(simpledialog.Dialog):
+    def __init__(self, parent, text, scale):
+        self.tr = translator_for(parent)
+        self.initial_text = text
+        self.scale = scale
+        self.drag_offset = None
+        super().__init__(parent, self.tr("todo.edit_title"))
+
+    def body(self, master):
+        palette = ORANGE
+        s = self.scale
+        self.content = master
+        self.configure(bg=palette.paper)
+        master.configure(bg=palette.paper)
+        self.resizable(False, False)
+
+        header = tk.Frame(master, bg=palette.hero)
+        header.pack(fill="x")
+        title = label(header, self.tr("todo.edit_title"), size=14, weight="bold", bg=palette.hero)
+        title.pack(side="left", padx=round(16 * s), pady=round(8 * s))
+        if WINDOWS:
+            self.overrideredirect(True)
+            self.attributes("-topmost", self.parent.attributes("-topmost"))
+            self.rounded_window = RoundedWindow(
+                self, round(17 * s), corner_colors=lambda: (palette.hero, palette.paper))
+            close = icon(header, "close", round(16 * s), palette.ink)
+            text_button(header, self.tr("action.close"), self.cancel, bg=palette.hero, fg=palette.ink,
+                        hover_bg=palette.hero_border, image=close, takefocus=False,
+                        padx=round(6 * s)).pack(side="right", padx=round(9 * s))
+            for widget in (header, title):
+                widget.configure(cursor="fleur")
+                widget.bind("<ButtonPress-1>", self.start_drag)
+                widget.bind("<B1-Motion>", self.drag)
+                widget.bind("<ButtonRelease-1>", self.finish_drag)
+
+        card = RoundedSurface(master, radius=round(12 * s), antialias=True)
+        card.pack(fill="both", expand=True, padx=round(12 * s), pady=round(12 * s))
+        self.form = tk.Frame(card, bg=palette.card)
+        self.form.pack(fill="both", expand=True, padx=round(13 * s), pady=round(12 * s))
+        label(self.form, self.tr("todo.edit_prompt"), size=10, color=palette.muted,
+              bg=palette.card, padx=0).pack(fill="x", pady=(0, round(6 * s)))
+        field = RoundedSurface(self.form, outside=palette.card, fill=palette.field,
+                               border=palette.hero_border, radius=round(8 * s), antialias=True)
+        field.pack(fill="x")
+        self.entry = tk.Entry(field, width=30, font=ui_font(11), bg=palette.field, fg=palette.ink,
+                              insertbackground=palette.ink, selectbackground=palette.action,
+                              selectforeground=palette.ink, relief="flat", bd=0, highlightthickness=0)
+        self.entry.pack(fill="x", padx=round(10 * s), pady=round(7 * s))
+        self.entry.bind("<FocusIn>", lambda _: field.set_border(palette.accent))
+        self.entry.bind("<FocusOut>", lambda _: field.set_border(palette.hero_border))
+        self.entry.insert(0, self.initial_text)
+        self.entry.selection_range(0, "end")
+        return self.entry
+
+    def buttonbox(self):
+        palette = ORANGE
+        s = self.scale
+        self.content.pack_configure(fill="both", expand=True, padx=0, pady=0)
+        actions = tk.Frame(self.form, bg=palette.card)
+        actions.pack(fill="x", pady=(round(11 * s), 0))
+        cancel = text_button(actions, self.tr("todo.cancel"), self.cancel,
+                             bg=palette.card, fg=palette.muted, padx=round(10 * s))
+        save = PillButton(actions, self.tr("todo.save"), self.ok,
+                          outside=palette.card, radius=round(8 * s))
+        save.control.pack_configure(padx=round(15 * s), pady=round(6 * s))
+        save.pack(side="right")
+        cancel.pack(side="right", padx=(0, round(6 * s)))
+        cancel.bind("<Return>", self.cancel)
+        self.bind("<Return>", self.ok)
+        self.bind("<Escape>", self.cancel)
+        if WINDOWS:
+            self.bind("<Alt-F4>", self.cancel)
+
+    def apply(self):
+        self.result = self.entry.get()
+
+    def cancel(self, event=None):
+        super().cancel(event)
+        return "break"
+
+    def start_drag(self, event):
+        self.drag_offset = event.x_root - self.winfo_rootx(), event.y_root - self.winfo_rooty()
+
+    def drag(self, event):
+        if self.drag_offset is not None:
+            x, y = self.drag_offset
+            set_window_bounds(self, event.x_root - x, event.y_root - y,
+                              self.winfo_width(), self.winfo_height())
+
+    def finish_drag(self, _):
+        self.drag_offset = None
+
+
 class StickyWindow:
     def __init__(self, root, store=None, thread_reader=read_project_threads, *,
                  settings_path=None):
@@ -1124,9 +1217,7 @@ class StickyWindow:
             self.refresh_tasks()
 
     def edit_task(self, task):
-        text = simpledialog.askstring(self.tr("todo.edit_title"), self.tr("todo.edit_prompt"),
-                                      initialvalue=task["text"],
-                                      parent=self.root)
+        text = EditTaskDialog(self.root, task["text"], self.scale).result
         if text is not None:
             self.change_task(task, text=text)
 
@@ -1225,7 +1316,11 @@ class StickyWindow:
         height = next(iter(cards)).compact_height()
         gap = round(9 * self.scale)
         card_width = min(width, round(124 * self.scale))
-        columns = min(len(cards), (width + gap) // (card_width + gap))
+        available_columns = (width + gap) // (card_width + gap)
+        # In narrow layouts, use the leftover space instead of leaving an empty gutter.
+        if available_columns < 3:
+            card_width = (width - gap * (available_columns - 1)) // available_columns
+        columns = min(len(cards), available_columns)
         for index, card in enumerate(cards):
             row, column = divmod(index, columns)
             card.configure(width=card_width, height=height)

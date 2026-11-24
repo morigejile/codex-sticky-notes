@@ -10,7 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "plugins" / "codex-sticky-notes"))
-from appearance import PillButton
+from appearance import PillButton, RoundedSurface
 from data import TaskStore, group_threads
 from i18n import load_language, save_language
 from native_frame import WS_CAPTION, gdi32, set_window_bounds, user32, window_style
@@ -79,6 +79,41 @@ def check_window_overlay(widget, rounded_window):
 def widget_text(widget):
     variable = widget["textvariable"]
     return widget.getvar(variable) if variable else widget["text"]
+
+
+def check_edit_dialog(window, store):
+    root = window.root
+    original = store.list()[0]
+    for key, expected in (("Escape", original["text"]), ("Return", "确认编辑后的待办")):
+        errors = []
+
+        def interact():
+            dialog = next(child for child in root.winfo_children()
+                          if isinstance(child, tk.Toplevel) and child.title() == "编辑待办")
+            try:
+                assert dialog["bg"] == ORANGE.paper
+                assert root.grab_current() is dialog
+                assert dialog.entry.get() == original["text"]
+                assert dialog.entry.selection_present()
+                assert isinstance(dialog.entry.master, RoundedSurface)
+                check_window_overlay(dialog, dialog.rounded_window)
+                dialog.entry.delete(0, "end")
+                dialog.entry.insert(0, "确认编辑后的待办")
+                dialog.entry.focus_force()
+                dialog.entry.event_generate(f"<{key}>")
+                assert not dialog.winfo_exists()
+            except Exception as error:
+                errors.append(error)
+            finally:
+                if dialog.winfo_exists():
+                    dialog.destroy()
+
+        root.after(80, interact)
+        window.edit_task(original)
+        if errors:
+            raise errors[0]
+        assert store.list()[0] == dict(original, text=expected)
+        assert root.grab_current() is None
 
 
 def check_session_footer(card):
@@ -365,6 +400,7 @@ def check_window(store):
         assert indicator_width == pin_size + round(5 * window.scale)
         checkbox.invoke()
         assert store.list()[0]["done"]
+        check_edit_dialog(window, store)
 
         assert list(window.project_cards) == ["one", "two", "read", "unknown"]
         one, two, read, unknown = window.project_cards.values()
@@ -438,6 +474,9 @@ def check_window(store):
         until(root, lambda: read.winfo_rooty() > one.winfo_rooty())
         assert two.winfo_rooty() == one.winfo_rooty()
         assert read.winfo_rootx() == one.winfo_rootx()
+        assert one.winfo_width() == two.winfo_width()
+        grid_right = screen_box(window.thread_list)[2]
+        assert 0 <= grid_right - screen_box(two)[2] <= 1
         assert title.winfo_ismapped() and close_button.winfo_ismapped() and art.winfo_ismapped()
         assert screen_box(controls[0])[1] >= screen_box(title)[3]
         assert screen_box(controls[-1])[2] <= screen_box(root)[2]
